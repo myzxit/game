@@ -1,0 +1,32 @@
+{
+  "name": "project-titan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PROJECT TITAN - original multiplayer FPS (authoritative server + WebGL client)",
+  "license": "SEE LICENSE IN LICENSE",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:shared": "tsc -b packages/shared",
+    "build:server": "tsc -b packages/server",
+    "build": "tsc -b packages/shared packages/server && npm run build --workspace=@titan/client",
+    "typecheck": "tsc -b packages/shared packages/server packages/client --pretty",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:server": "node --experimental-strip-types packages/server/src/main.ts",
+    "dev:client": "npm run dev --workspace=@titan/client",
+    "start": "node packages/server/dist/main.js",
+    "clean": "rm -rf packages/*/dist packages/*/tsconfig.tsbuildinfo packages/client/.vite"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
