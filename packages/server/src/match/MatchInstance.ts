@@ -242,10 +242,9 @@ export class MatchInstance {
   // ============================================================== ingress ==
 
   /** Queue validated inputs from a client. */
-  enqueueInputs(playerId: string, inputs: PlayerInput[], lastAckedSnapshot: number): void {
+  enqueueInputs(playerId: string, inputs: PlayerInput[]): void {
     const player = this.players.get(playerId);
     if (!player) return;
-    player.lastAckedSnapshot = lastAckedSnapshot;
 
     const queue = this.inputQueues.get(playerId);
     if (!queue) return;

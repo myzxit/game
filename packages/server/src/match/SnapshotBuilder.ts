@@ -34,8 +34,6 @@ import type { PlayerEntity } from './PlayerEntity.js';
 
 export class SnapshotBuilder {
   private nextId = 1;
-  /** The last full snapshot each client acknowledged, for delta compression. */
-  private readonly lastAcked = new Map<string, ServerSnapshot>();
   /** Every snapshot we've sent recently, keyed by id, so an ack can find its base. */
   private readonly history = new Map<number, ServerSnapshot>();
   private readonly historyLimit = 64;
@@ -157,14 +155,33 @@ export class SnapshotBuilder {
     return out;
   }
 
+  /**
+   * Record the newest snapshot a client has confirmed receiving.
+   *
+   * Acks arrive two ways: a dedicated AckSnapshot message, and piggybacked on
+   * every input batch. Both land here, and the newest id wins — an ack can
+   * overtake an input batch in flight, and accepting an older id would send a
+   * delta against a base the client has already discarded.
+   *
+   * A client that fails to reconstruct a delta acks -1, which resets the base
+   * so the next snapshot is sent in full.
+   */
   acknowledge(playerId: string, snapshotId: number): void {
-    const snapshot = this.history.get(snapshotId);
-    if (snapshot) this.lastAcked.set(playerId, snapshot);
+    const player = this.match.players.get(playerId);
+    if (!player) return;
+    if (snapshotId < 0) {
+      player.lastAckedSnapshot = -1;
+      return;
+    }
+    // Only ids we actually sent, and only forwards.
+    if (!this.history.has(snapshotId)) return;
+    if (snapshotId > player.lastAckedSnapshot) player.lastAckedSnapshot = snapshotId;
   }
 
   reset(): void {
     this.history.clear();
-    this.lastAcked.clear();
+    this.nextId = 1;
+    for (const player of this.match.players.values()) player.lastAckedSnapshot = -1;
   }
 }
 

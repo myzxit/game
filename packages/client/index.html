@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>PROJECT TITAN</title>
+    <!-- Inline so there is no favicon request to 404 on. Original mark: the
+         angular "T" chevron used on the loading screen. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0f14'/%3E%3Cpath d='M6 8h20l-3.5 5H19v11l-6 3V13H9.5z' fill='%234fd1ff'/%3E%3C/svg%3E"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <style>
+      /* Base shell only. All in-game UI styling lives in src/ui/styles.css,
+         which is imported by the bootstrap so it can be hot-reloaded. */
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #05070c;
+        color: #e8edf5;
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overscroll-behavior: none;
+        touch-action: none;
+      }
+      #viewport {
+        position: fixed;
+        inset: 0;
+        display: block;
+        /* Explicit, not just `inset: 0`. A canvas is a replaced element, so an
+           `auto` width on an absolutely positioned box resolves to its intrinsic
+           size — the drawing buffer — instead of stretching to the insets. With
+           a resolutionScale below 1 that left the rendered image sitting small
+           in the top-left corner with black around it, rather than being
+           upscaled to fill the window. */
+        width: 100%;
+        height: 100%;
+      }
+      #ui-root {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+      /* Shown before the bundle boots, and replaced by the real loading screen. */
+      #preboot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: #05070c;
+        z-index: 100;
+      }
+      #preboot .mark {
+        font-size: 13px;
+        letter-spacing: 0.42em;
+        text-transform: uppercase;
+        color: #5a6b85;
+      }
+      #preboot.hidden {
+        display: none;
+      }
+      noscript {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        text-align: center;
+        z-index: 200;
+        background: #05070c;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="viewport"></canvas>
+    <div id="ui-root"></div>
+    <div id="preboot"><div class="mark">PROJECT TITAN</div></div>
+    <noscript>
+      이 게임을 실행하려면 JavaScript가 필요합니다.<br />
+      JavaScript is required to run this game.
+    </noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

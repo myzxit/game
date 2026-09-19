@@ -307,6 +307,7 @@ export enum ServerMessageType {
   Notification = 'notification',
   QuestUpdate = 'quest_update',
   InventoryUpdate = 'inventory_update',
+  ShopUpdate = 'shop_update',
   CurrencyUpdate = 'currency_update',
   ProgressionUpdate = 'progression_update',
   CrateResult = 'crate_result',
@@ -577,6 +578,27 @@ export interface ServerInventoryUpdate {
   equippedTitle: string | null;
 }
 
+export interface ServerShopEntry {
+  itemId: string;
+  section: string;
+  currency: Currency;
+  price: number;
+  basePrice: number;
+  discountPercent: number;
+  unlockLevel: number;
+  owned: boolean;
+  purchasable: boolean;
+}
+
+export interface ServerShopUpdate {
+  type: ServerMessageType.ShopUpdate;
+  /** Section id -> entries currently on sale. */
+  sections: Record<string, ServerShopEntry[]>;
+  /** When the rotating sections next change, as server timestamps. */
+  dailyRefreshAtMs: number;
+  weeklyRefreshAtMs: number;
+}
+
 export interface ServerCurrencyUpdate {
   type: ServerMessageType.CurrencyUpdate;
   balances: Record<Currency, number>;
@@ -729,6 +751,7 @@ export type ServerMessage =
   | ServerNotification
   | ServerQuestUpdate
   | ServerInventoryUpdate
+  | ServerShopUpdate
   | ServerCurrencyUpdate
   | ServerProgressionUpdate
   | ServerCrateResult

@@ -1,0 +1,225 @@
+import { chromium } from 'playwright';
+import { writeFileSync } from 'node:fs';
+
+// The diagnostics hook (`window.titan`) is exposed in dev builds only — release
+// builds must not hand a console a handle on the game. So the harness drives the
+// dev server by default; point it at the preview build with QA_CLIENT_URL to
+// check the production bundle, and the diagnostics-dependent steps will report
+// as skipped rather than failing.
+const CLIENT_URL = process.env.QA_CLIENT_URL ?? 'http://127.0.0.1:5173';
+const SERVER_WS = process.env.QA_SERVER_WS ?? 'ws://127.0.0.1:8080';
+const URL = `${CLIENT_URL}/?server=${SERVER_WS}`;
+const log = (...a) => console.log('[QA]', ...a);
+
+async function makeClient(name, index) {
+  const browser = await chromium.launch({
+    executablePath: '/opt/pw-browsers/chromium',
+    args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox',
+           '--enable-webgl', '--ignore-gpu-blocklist'],
+  });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const errors = [];
+  page.on('console', (m) => {
+    const text = m.text();
+    if (m.type() === 'error') errors.push(text);
+    if (/\[(Game|Net|Renderer|Boot|Audio|Assets)\]/.test(text)) log(`${name}:`, text.slice(0, 160));
+  });
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  await page.goto(URL, { waitUntil: 'networkidle' });
+  return { browser, page, errors, name, index };
+}
+
+const results = { steps: [], errors: [] };
+const step = (n, ok, detail = '') => {
+  results.steps.push({ name: n, ok, detail });
+  log(`${ok ? 'PASS' : 'FAIL'} — ${n}${detail ? ` (${detail})` : ''}`);
+};
+// Recorded separately from pass/fail: a skipped step is not evidence of
+// anything, and counting it as a pass would overstate what was verified.
+const skip = (n, why) => {
+  results.steps.push({ name: n, skipped: true, detail: why });
+  log(`SKIP — ${n} (${why})`);
+};
+
+const a = await makeClient('A', 0);
+const b = await makeClient('B', 1);
+
+try {
+  // ---- boot ----
+  await a.page.waitForSelector('#screen-login.active', { timeout: 15000 });
+  step('client boots to the login screen', true);
+
+  const canvasOk = await a.page.evaluate(() => {
+    const c = document.getElementById('viewport');
+    return !!(c && (c.getContext('webgl2') || c.getContext('webgl')));
+  });
+  step('WebGL context is available', canvasOk);
+
+  // ---- login both ----
+  for (const c of [a, b]) {
+    await c.page.fill('[data-el="loginName"]', `Operator${c.index + 1}`);
+    await c.page.click('[data-el="loginEnter"]');
+  }
+  await a.page.waitForSelector('#screen-menu.active', { timeout: 15000 });
+  await b.page.waitForSelector('#screen-menu.active', { timeout: 15000 });
+  step('both clients connect and reach the menu', true);
+
+  const profile = await a.page.evaluate(() => ({
+    name: document.querySelector('[data-el="menuName"]')?.textContent,
+    level: document.querySelector('[data-el="menuLevel"]')?.textContent,
+    coins: document.querySelector('[data-el="menuCoins"]')?.textContent,
+  }));
+  step('profile loaded from the server', profile.name === 'Operator1' && profile.coins !== '0',
+       JSON.stringify(profile));
+
+  // ---- meta screens render ----
+  for (const tab of ['loadout', 'inventory', 'shop', 'quests', 'rank', 'settings']) {
+    await a.page.click(`[data-tab="${tab}"]`);
+    await a.page.waitForTimeout(180);
+    const hasContent = await a.page.evaluate(() =>
+      (document.querySelector('[data-el="menuContent"]')?.textContent ?? '').trim().length > 20);
+    step(`menu tab "${tab}" renders`, hasContent);
+  }
+  await a.page.click('[data-tab="play"]');
+
+  // ---- queue both into TDM ----
+  for (const c of [a, b]) {
+    await c.page.click('[data-mode="tdm"]');
+    await c.page.click('[data-el="playButton"]');
+  }
+  step('both clients queued', true);
+
+  // ---- match ----
+  await a.page.waitForSelector('#hud.active', { timeout: 25000 });
+  await b.page.waitForSelector('#hud.active', { timeout: 25000 });
+  step('matchmaking formed a match and both clients entered it', true);
+
+  // Let warmup pass and the world render.
+  await a.page.waitForTimeout(3000);
+
+  const hud = await a.page.evaluate(() => ({
+    health: document.querySelector('[data-el="healthValue"]')?.textContent,
+    ammo: document.querySelector('[data-el="ammoMag"]')?.textContent,
+    reserve: document.querySelector('[data-el="ammoReserve"]')?.textContent,
+    weapon: document.querySelector('[data-el="weaponName"]')?.textContent,
+  }));
+  step('HUD shows live vitals and ammo', hud.health === '100' && Number(hud.ammo) > 0,
+       JSON.stringify(hud));
+
+  // The rendered image must fill the window. A canvas is a replaced element, so
+  // sizing it by insets alone silently falls back to the drawing-buffer size and
+  // leaves the game rendering into a corner whenever resolutionScale < 1.
+  const canvasFit = await a.page.evaluate(() => {
+    const c = document.getElementById('viewport');
+    const r = c.getBoundingClientRect();
+    return {
+      css: [Math.round(r.width), Math.round(r.height)],
+      buffer: [c.width, c.height],
+      window: [window.innerWidth, window.innerHeight],
+    };
+  });
+  step('the viewport fills the window',
+       canvasFit.css[0] === canvasFit.window[0] && canvasFit.css[1] === canvasFit.window[1],
+       JSON.stringify(canvasFit));
+
+  const hasDiag = await a.page.evaluate(() => !!window.titan);
+  const noDiag = 'window.titan is exposed in dev builds only';
+
+  if (!hasDiag) {
+    skip('scene is rendering geometry', noDiag);
+    skip('local player moved under prediction', noDiag);
+    skip('prediction error stays small', noDiag);
+    skip('the other player is rendered as a remote entity', noDiag);
+  } else {
+    const render = await a.page.evaluate(() => {
+      const r = window.titan.renderer?.renderer?.info?.render;
+      return r ? { calls: r.calls, tris: r.triangles } : null;
+    });
+    step('scene is rendering geometry', !!render && render.calls > 0 && render.tris > 1000,
+         JSON.stringify(render));
+
+    // ---- movement (predicted, client-side) ----
+    // Keyboard input is only routed into the sim while the viewport has pointer
+    // lock, which is what the player's first click does.
+    await a.page.click('#viewport', { position: { x: 640, y: 360 } });
+    await a.page.waitForTimeout(250);
+
+    const before = await a.page.evaluate(() => {
+      const p = window.titan.prediction.state.position;
+      return { x: p.x, y: p.y, z: p.z };
+    });
+    await a.page.keyboard.down('KeyW');
+    await a.page.waitForTimeout(1200);
+    await a.page.keyboard.up('KeyW');
+    await a.page.waitForTimeout(300);
+    const after = await a.page.evaluate(() => {
+      const p = window.titan.prediction.state.position;
+      return { x: p.x, y: p.y, z: p.z };
+    });
+    const moved = Math.hypot(after.x - before.x, after.z - before.z);
+    step('local player moved under prediction', moved > 0.5, `moved ${moved.toFixed(2)}m`);
+
+    const predStats = await a.page.evaluate(() => window.titan.prediction.stats());
+    step('prediction error stays small', predStats.error < 1.0, JSON.stringify(predStats));
+
+    // ---- remote player visible ----
+    const remotes = await a.page.evaluate(() => window.titan.remoteEntities.size);
+    step('the other player is rendered as a remote entity', remotes >= 1, `remotes=${remotes}`);
+
+    // ---- delta compression actually compresses ----
+    // A resync costs a full snapshot, so a high rate means delta compression is
+    // doing net harm. It was 100% before the client kept a snapshot history.
+    const net = await a.page.evaluate(() => ({
+      resyncs: window.titan.deltaResyncs,
+      applied: window.titan.lastAckedSnapshot,
+    }));
+    const resyncRate = net.applied > 0 ? net.resyncs / net.applied : 1;
+    step('delta snapshots reconstruct without resyncing', resyncRate < 0.05,
+         `${net.resyncs} resyncs over ${net.applied} snapshots`);
+  }
+
+  // ---- perf ----
+  const perf = await a.page.evaluate(async () => {
+    const samples = [];
+    let last = performance.now();
+    await new Promise((res) => {
+      let n = 0;
+      const tick = () => {
+        const now = performance.now();
+        samples.push(now - last);
+        last = now;
+        if (++n >= 120) return res();
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    samples.sort((x, y) => x - y);
+    return { median: samples[60], p90: samples[108] };
+  });
+  step('frame time is stable in software rendering', perf.p90 < 400,
+       `median ${perf.median.toFixed(1)}ms p90 ${perf.p90.toFixed(1)}ms (SwiftShader, no GPU)`);
+
+  await a.page.screenshot({ path: '/tmp/titan-qa/match.png' });
+  await b.page.screenshot({ path: '/tmp/titan-qa/match-b.png' });
+  step('captured screenshots', true);
+
+} catch (e) {
+  step('E2E run completed without throwing', false, String(e).slice(0, 300));
+  try { await a.page.screenshot({ path: '/tmp/titan-qa/failure.png' }); } catch {}
+} finally {
+  results.errors = [...a.errors, ...b.errors];
+  writeFileSync('/tmp/titan-qa/results.json', JSON.stringify(results, null, 2));
+  await a.browser.close();
+  await b.browser.close();
+}
+
+const failed = results.steps.filter((s) => !s.skipped && !s.ok);
+const skipped = results.steps.filter((s) => s.skipped);
+const ran = results.steps.length - skipped.length;
+log(`\n${ran - failed.length}/${ran} steps passed` +
+    (skipped.length ? `, ${skipped.length} skipped` : ''));
+if (results.errors.length) {
+  log('console errors:');
+  for (const e of [...new Set(results.errors)].slice(0, 10)) log('  ', e.slice(0, 200));
+}
+process.exit(failed.length > 0 ? 1 : 0);

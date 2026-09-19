@@ -155,6 +155,8 @@ export const en: Record<string, string> = {
   'inventory.sort_name': 'By name',
   'inventory.sort_recent': 'Newest',
   'inventory.empty': 'Nothing matches that filter.',
+  'inventory.empty_hint':
+    'Buy skins and supply crates in the store, or earn them from contracts and rank rewards.',
   'inventory.preview': 'Preview',
   'inventory.item_count': '{count} owned',
 

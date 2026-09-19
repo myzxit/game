@@ -163,6 +163,7 @@ export const ko: Record<string, string> = {
   'inventory.sort_name': '이름순',
   'inventory.sort_recent': '최신순',
   'inventory.empty': '해당하는 아이템이 없습니다.',
+  'inventory.empty_hint': '상점에서 스킨과 보급 상자를 구매하거나, 임무와 랭크 보상으로 획득할 수 있습니다.',
   'inventory.preview': '미리보기',
   'inventory.item_count': '{count}개 보유',
 

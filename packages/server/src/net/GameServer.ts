@@ -33,6 +33,7 @@ import {
   levelFromTotalXp,
   type ClientMessage,
   type ServerMessage,
+  type ServerShopEntry,
 } from '@titan/shared';
 import { Connection } from './Connection.js';
 import { SessionRegistry } from './SessionRegistry.js';
@@ -270,7 +271,13 @@ export class GameServer {
 
       case ClientMessageType.Input: {
         const match = this.matchFor(playerId);
-        if (match) match.instance.enqueueInputs(playerId, message.inputs, message.lastAckedSnapshot);
+        if (match) {
+          // Every input batch piggybacks the client's newest acknowledged
+          // snapshot. It goes through the same guarded path as the dedicated
+          // AckSnapshot message so the two cannot disagree about the delta base.
+          match.snapshots.acknowledge(playerId, message.lastAckedSnapshot);
+          match.instance.enqueueInputs(playerId, message.inputs);
+        }
         break;
       }
 
@@ -490,6 +497,8 @@ export class GameServer {
     });
 
     connection.send(this.profileSyncMessage(profile, loginState.rewardAvailable, now));
+    connection.send(this.shopMessage(profile, now));
+    connection.send({ type: ServerMessageType.QuestUpdate, ...this.quests.snapshot(profile, now) });
     connection.send({ type: ServerMessageType.ServerStatus, ...this.statusPayload(), shutdownInMs: null });
     this.analytics.recordFunnel(session.playerId, FunnelStep.EnteredLobby);
 
@@ -803,6 +812,7 @@ export class GameServer {
     }
     connection.send(this.currencyMessage(profile));
     connection.send(this.inventoryMessage(profile));
+    connection.send(this.shopMessage(profile));
     this.notify(connection, 'success', 'shop.purchase_success', { item: itemId });
   }
 
@@ -1121,6 +1131,40 @@ export class GameServer {
       ownedCharacterIds: profile.ownedCharacterIds,
       loadout: profile.loadout,
       equippedTitle: profile.equippedTitleId,
+    };
+  }
+
+  /**
+   * The live storefront for this player.
+   *
+   * Rebuilt per request rather than cached: the rotation is a pure function of
+   * the clock, and ownership/affordability are per-player, so a shared cache
+   * would have to be invalidated on every purchase anyway.
+   */
+  private shopMessage(profile: PlayerProfile, now = Date.now()): ServerMessage {
+    const storefront = this.shop.storefront(profile, now);
+    const rotation = this.shop.nextRotationAt(now);
+
+    const sections: Record<string, ServerShopEntry[]> = {};
+    for (const [section, entries] of Object.entries(storefront)) {
+      sections[section] = entries.map((e) => ({
+        itemId: e.itemId,
+        section: e.section,
+        currency: e.currency,
+        price: e.price,
+        basePrice: e.basePrice,
+        discountPercent: e.discountPercent,
+        unlockLevel: e.unlockLevel,
+        owned: e.owned ?? false,
+        purchasable: e.purchasable ?? false,
+      }));
+    }
+
+    return {
+      type: ServerMessageType.ShopUpdate,
+      sections,
+      dailyRefreshAtMs: rotation.daily,
+      weeklyRefreshAtMs: rotation.weekly,
     };
   }
 

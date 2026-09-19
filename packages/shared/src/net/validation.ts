@@ -484,7 +484,11 @@ export function validateClientMessage(raw: unknown): ValidationResult<ClientMess
     }
 
     case ClientMessageType.AckSnapshot: {
-      if (!inRange(raw.snapshotId, 0, Number.MAX_SAFE_INTEGER)) return reject('bad snapshotId');
+      // -1 is the documented "I could not reconstruct that delta, resend in
+      // full" signal, and must be accepted here for the same reason the Input
+      // message's piggybacked `lastAckedSnapshot` accepts it. Rejecting it
+      // disconnects any client that drops a snapshot.
+      if (!inRange(raw.snapshotId, -1, Number.MAX_SAFE_INTEGER)) return reject('bad snapshotId');
       return pass({ type: ClientMessageType.AckSnapshot, snapshotId: Math.floor(raw.snapshotId) });
     }
 
