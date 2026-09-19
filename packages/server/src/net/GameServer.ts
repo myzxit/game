@@ -943,23 +943,63 @@ export class GameServer {
     if (kind === 'vehicle') {
       const match = this.matchFor(profile.id);
       if (!match) return;
+      // "Press E on a vehicle" is the same request as the explicit board
+      // message, so it goes through the same validated path.
       const numeric = Number.parseInt(targetId, 10);
-      if (Number.isFinite(numeric)) this.handleVehicleEnter(profile.id, numeric);
+      if (Number.isFinite(numeric)) {
+        this.handleVehicle(profile.id, {
+          type: ClientMessageType.EnterVehicle,
+          vehicleId: numeric,
+        });
+      }
     }
   }
 
+  /**
+   * Route a board / drive / exit request to the match's VehicleSystem.
+   *
+   * Nothing here decides anything: VehicleSystem re-checks proximity, seat
+   * availability, liveness and ownership against authoritative state, so a
+   * client cannot board a vehicle across the map or drive one it is not in.
+   */
   private handleVehicle(playerId: string, message: ClientMessage): void {
     const match = this.matchFor(playerId);
     if (!match) return;
-    void match;
-    void message;
-    // Vehicle control is routed through the match's VehicleSystem, which owns
-    // the authoritative state. Wired in MatchInstance; see VehicleSystem.
+
+    const player = match.instance.players.get(playerId);
+    if (!player) return;
+
+    const vehicles = match.instance.vehicleSystem;
+
+    switch (message.type) {
+      case ClientMessageType.EnterVehicle: {
+        const vehicle = vehicles.enter(player, message.vehicleId);
+        // A refusal is normal (out of range, full, destroyed) and not an error:
+        // the client simply stays on foot and the next snapshot says so.
+        if (vehicle) this.broadcastVehicleState(match);
+        break;
+      }
+
+      case ClientMessageType.ExitVehicle:
+        vehicles.exit(player);
+        this.broadcastVehicleState(match);
+        break;
+
+      case ClientMessageType.VehicleInput:
+        // Only the driver's input is accepted; setInput ignores a passenger.
+        vehicles.setInput(playerId, message.throttle, message.steer, message.brake);
+        break;
+
+      default:
+        break;
+    }
   }
 
-  private handleVehicleEnter(playerId: string, vehicleId: number): void {
-    void playerId;
-    void vehicleId;
+  private broadcastVehicleState(match: ActiveMatch): void {
+    match.instance.broadcast({
+      type: ServerMessageType.VehicleState,
+      vehicles: match.instance.vehicleSystem.snapshot(),
+    });
   }
 
   private handleParty(connection: Connection, profile: PlayerProfile, message: ClientMessage): void {

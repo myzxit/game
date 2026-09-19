@@ -19,6 +19,8 @@
     "typecheck": "tsc -b packages/shared packages/server packages/client --pretty",
     "test": "vitest run",
     "test:watch": "vitest",
+    "qa:e2e": "node qa/e2e.mjs",
+    "qa:server": "node qa/final-qa.mjs",
     "dev:server": "node --experimental-strip-types packages/server/src/main.ts",
     "dev:client": "npm run dev --workspace=@titan/client",
     "start": "node packages/server/dist/main.js",

@@ -193,7 +193,7 @@ describe('movement through the match', () => {
     const start = { ...player.position };
 
     for (let i = 0; i < 60; i++) {
-      match.enqueueInputs('a1', [input(i + 1, { moveZ: 1, yaw: player.movement.yaw })], -1);
+      match.enqueueInputs('a1', [input(i + 1, { moveZ: 1, yaw: player.movement.yaw })]);
       advance(match, 1);
     }
 
@@ -211,7 +211,7 @@ describe('movement through the match', () => {
     ]);
     goLive(match);
 
-    match.enqueueInputs('a1', [input(1), input(2), input(3)], -1);
+    match.enqueueInputs('a1', [input(1), input(2), input(3)]);
     advance(match, 2);
     expect(match.players.get('a1')!.lastProcessedInput).toBeGreaterThanOrEqual(3);
   });
@@ -223,12 +223,12 @@ describe('movement through the match', () => {
     ]);
     goLive(match);
 
-    match.enqueueInputs('a1', [input(10, { moveZ: 1 })], -1);
+    match.enqueueInputs('a1', [input(10, { moveZ: 1 })]);
     advance(match, 1);
     const afterFirst = { ...match.players.get('a1')!.position };
 
     // Replaying an older sequence must not move the player again.
-    match.enqueueInputs('a1', [input(5, { moveZ: 1 }), input(10, { moveZ: 1 })], -1);
+    match.enqueueInputs('a1', [input(5, { moveZ: 1 }), input(10, { moveZ: 1 })]);
     advance(match, 1);
 
     const player = match.players.get('a1')!;
@@ -282,7 +282,7 @@ describe('combat', () => {
 
     // Aim slightly down: the shooter's eye is ~1.84m up, the target's chest
     // sits around 1.3-1.75m, so a level shot would pass over the shoulder.
-    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })], -1);
+    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })]);
     advance(match, 2);
 
     expect(target.effectiveHealth).toBeLessThan(before);
@@ -312,7 +312,7 @@ describe('combat', () => {
     mate.spawnProtectedMs = 0;
 
     const before = mate.effectiveHealth;
-    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })], -1);
+    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })]);
     advance(match, 2);
 
     expect(mate.effectiveHealth).toBe(before);
@@ -323,7 +323,7 @@ describe('combat', () => {
     target.spawnProtectedMs = 2000;
     const before = target.effectiveHealth;
 
-    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })], -1);
+    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })]);
     advance(match, 2);
     expect(target.effectiveHealth).toBe(before);
   });
@@ -332,7 +332,7 @@ describe('combat', () => {
     const { match, shooter, target, yaw, place } = duel(10);
 
     for (let i = 0; i < 200 && target.alive; i++) {
-      match.enqueueInputs('a1', [input(i + 1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })], -1);
+      match.enqueueInputs('a1', [input(i + 1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })]);
       advance(match, 1);
       // Keep both players still, so this measures damage rather than the
       // target wandering out of the line of fire.
@@ -370,7 +370,7 @@ describe('combat', () => {
 
     const before = target.effectiveHealth;
     for (let i = 0; i < 10; i++) {
-      match.enqueueInputs('a1', [input(i + 1, { buttons: InputButton.Fire, yaw: -Math.PI / 2 })], -1);
+      match.enqueueInputs('a1', [input(i + 1, { buttons: InputButton.Fire, yaw: -Math.PI / 2 })]);
       advance(match, 1);
     }
     expect(target.effectiveHealth).toBe(before);
@@ -382,7 +382,7 @@ describe('combat', () => {
     const startShield = target.shield;
     const startHealth = target.health;
 
-    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })], -1);
+    match.enqueueInputs('a1', [input(1, { buttons: InputButton.Fire, yaw, pitch: -0.02 })]);
     advance(match, 2);
 
     expect(target.shield).toBeLessThan(startShield);
@@ -677,5 +677,131 @@ describe('stability', () => {
       if (!player.alive) continue; // out-of-bounds kills are the intended handling
       expect(player.position.y).toBeGreaterThan(map.bounds.min.y - 25);
     }
+  });
+});
+
+describe('vehicles', () => {
+  // Neon Quarter is the map with a vehicle spawn; Foundry Reach has its own.
+  const MAP = 'neon_quarter';
+
+  function vehicleMatch() {
+    const match = makeMatch(
+      GameModeId.TeamDeathmatch,
+      [seed('a1', TeamId.Alpha), seed('b1', TeamId.Bravo)],
+      MAP,
+    );
+    advance(match, 1);
+    return match;
+  }
+
+  it('spawns the vehicles the map declares', () => {
+    const match = vehicleMatch();
+    const vehicles = match.vehicleSystem.all;
+    expect(vehicles.length).toBeGreaterThan(0);
+    for (const v of vehicles) {
+      expect(v.destroyed).toBe(false);
+      expect(v.driverId).toBeNull();
+      expect(v.health).toBeGreaterThan(0);
+    }
+  });
+
+  it('refuses to board a vehicle from across the map', () => {
+    // The whole point of server authority here: proximity is checked against
+    // the server's position for the player, not asserted by the client.
+    const match = vehicleMatch();
+    const vehicle = match.vehicleSystem.all[0]!;
+    const player = match.players.get('a1')!;
+
+    player.movement.position = vec3(
+      vehicle.position.x + 500,
+      vehicle.position.y,
+      vehicle.position.z,
+    );
+
+    expect(match.vehicleSystem.enter(player, vehicle.id)).toBeNull();
+    expect(player.vehicleId).toBeNull();
+    expect(vehicle.driverId).toBeNull();
+  });
+
+  it('boards, drives and dismounts', () => {
+    const match = vehicleMatch();
+    const vehicle = match.vehicleSystem.all[0]!;
+    const player = match.players.get('a1')!;
+
+    // Stand on the vehicle so the proximity check passes.
+    player.movement.position = { ...vehicle.position };
+
+    expect(match.vehicleSystem.enter(player, vehicle.id)).not.toBeNull();
+    expect(player.vehicleId).toBe(vehicle.id);
+    expect(vehicle.driverId).toBe('a1');
+
+    const start = { ...vehicle.position };
+    match.vehicleSystem.setInput('a1', 1, 0, false);
+    advance(match, 64); // one second of full throttle
+
+    const travelled = Math.hypot(
+      vehicle.position.x - start.x,
+      vehicle.position.z - start.z,
+    );
+    expect(travelled).toBeGreaterThan(1);
+    // The driver rides along rather than being left at the spawn point.
+    expect(
+      Math.hypot(player.position.x - vehicle.position.x, player.position.z - vehicle.position.z),
+    ).toBeLessThan(4);
+
+    match.vehicleSystem.exit(player);
+    expect(player.vehicleId).toBeNull();
+    expect(vehicle.driverId).toBeNull();
+  });
+
+  it('ignores drive input from someone who is not the driver', () => {
+    const match = vehicleMatch();
+    const vehicle = match.vehicleSystem.all[0]!;
+    const driver = match.players.get('a1')!;
+    driver.movement.position = { ...vehicle.position };
+    match.vehicleSystem.enter(driver, vehicle.id);
+
+    match.vehicleSystem.setInput('a1', 1, 0, false);
+    match.vehicleSystem.setInput('b1', -1, 1, true); // not in the vehicle
+    expect(vehicle.throttle).toBe(1);
+    expect(vehicle.steer).toBe(0);
+    expect(vehicle.brake).toBe(false);
+  });
+
+  it('does not let two players take the same seat', () => {
+    const match = vehicleMatch();
+    const vehicle = match.vehicleSystem.all[0]!;
+    const a = match.players.get('a1')!;
+    const b = match.players.get('b1')!;
+    a.movement.position = { ...vehicle.position };
+    b.movement.position = { ...vehicle.position };
+
+    match.vehicleSystem.enter(a, vehicle.id);
+    const seats = vehicle.def.seats;
+    const boarded = match.vehicleSystem.enter(b, vehicle.id);
+
+    if (seats > 1) {
+      expect(boarded).not.toBeNull();
+      expect(vehicle.passengerIds).toContain('b1');
+    } else {
+      expect(boarded).toBeNull();
+      expect(b.vehicleId).toBeNull();
+    }
+    // Either way there is exactly one driver.
+    expect(vehicle.driverId).toBe('a1');
+  });
+
+  it('ejects the occupant when the vehicle is destroyed', () => {
+    const match = vehicleMatch();
+    const vehicle = match.vehicleSystem.all[0]!;
+    const player = match.players.get('a1')!;
+    player.movement.position = { ...vehicle.position };
+    match.vehicleSystem.enter(player, vehicle.id);
+
+    match.vehicleSystem.damage(vehicle, vehicle.health + 100, 'b1', timeOf(match));
+
+    expect(vehicle.destroyed).toBe(true);
+    expect(vehicle.driverId).toBeNull();
+    expect(player.vehicleId).toBeNull();
   });
 });

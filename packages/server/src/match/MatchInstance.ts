@@ -1197,6 +1197,16 @@ export class MatchInstance {
     return this.projectiles;
   }
 
+  /**
+   * The authoritative vehicle system, so the connection layer can route a
+   * client's board / drive / exit requests into it. Every one of its entry
+   * points re-validates against server state — proximity, seat count, liveness
+   * — so routing a message here grants the client nothing.
+   */
+  get vehicleSystem(): VehicleSystem {
+    return this.vehicles;
+  }
+
   spawnSelector(): SpawnSelector {
     return this.spawns;
   }
