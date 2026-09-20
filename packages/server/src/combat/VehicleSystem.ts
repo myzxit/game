@@ -8,6 +8,7 @@
  */
 
 import {
+  type VehicleSnapshot,
   DamageType,
   HitZone,
   ServerMessageType,
@@ -56,6 +57,21 @@ export interface VehicleInstance {
 
 /** Distance within which a player may board. */
 const BOARD_RANGE = 3.2;
+
+/**
+ * Half-width of the axis-aligned box a vehicle collides with.
+ *
+ * The collision world is AABB-only, so a rotated buggy has to be approximated
+ * by a square. Using the *longer* half-extent made that square 4.2m across,
+ * wider than the buggy by a metre each side: it overlapped the crates beside
+ * its pad every tick, and every tick's "wall hit" cut its speed by 75%. The
+ * result was a vehicle that crawled at 0.07 m/s under full throttle. The mean
+ * of the two extents keeps the box honest about width without letting the
+ * nose sink a full metre into walls.
+ */
+export function vehicleFootprint(def: VehicleDefinition): number {
+  return (def.size.x + def.size.z) / 2;
+}
 
 export class VehicleSystem {
   private readonly vehicles = new Map<number, VehicleInstance>();
@@ -221,7 +237,7 @@ export class VehicleSystem {
       vehicle.position,
       velocity,
       dt,
-      Math.max(def.size.x, def.size.z),
+      vehicleFootprint(def),
       def.size.y * 2,
       0.45,
     );
@@ -368,8 +384,8 @@ export class VehicleSystem {
     }
   }
 
-  /** Payload for the VehicleState message. */
-  snapshot() {
+  /** Authoritative state for the snapshot's `vehicles` list. */
+  snapshot(): VehicleSnapshot[] {
     return this.all.map((v) => ({
       id: v.id,
       defId: v.defId,

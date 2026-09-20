@@ -106,3 +106,42 @@ describe('malformed input', () => {
     expect(validateClientMessage({ type: 'drop_tables' }).ok).toBe(false);
   });
 });
+
+describe('developer commands', () => {
+  // The validator only checks shape. Whether a server *honours* a dev command
+  // is its devTools setting's decision, and a production build cannot turn
+  // that on — so a well-formed command from a player is still refused there.
+  it('accepts a well-formed teleport', () => {
+    const r = validateClientMessage({
+      type: ClientMessageType.DevCommand,
+      command: { kind: 'teleport', x: 1, y: 2, z: 3 },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects a teleport outside any map', () => {
+    const r = validateClientMessage({
+      type: ClientMessageType.DevCommand,
+      command: { kind: 'teleport', x: 1e9, y: 0, z: 0 },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.suspicious).toBe(true);
+  });
+
+  it('rejects an unknown command kind and a missing command', () => {
+    expect(validateClientMessage({ type: ClientMessageType.DevCommand, command: { kind: 'ban_everyone' } }).ok).toBe(false);
+    expect(validateClientMessage({ type: ClientMessageType.DevCommand }).ok).toBe(false);
+  });
+
+  it('floors and bounds coin grants', () => {
+    const r = validateClientMessage({
+      type: ClientMessageType.DevCommand,
+      command: { kind: 'give_coins', amount: 12.9 },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === ClientMessageType.DevCommand && r.value.command.kind === 'give_coins') {
+      expect(r.value.command.amount).toBe(12);
+    }
+    expect(validateClientMessage({ type: ClientMessageType.DevCommand, command: { kind: 'give_coins', amount: -1 } }).ok).toBe(false);
+  });
+});

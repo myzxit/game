@@ -66,6 +66,7 @@ function snapshot(id: number, players: PlayerSnapshot[]): ServerSnapshot {
     removed: [],
     local: LOCAL,
     projectiles: [],
+    vehicles: [],
     worldEvents: [],
   };
 }

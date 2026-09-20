@@ -176,6 +176,117 @@ try {
     const resyncRate = net.applied > 0 ? net.resyncs / net.applied : 1;
     step('delta snapshots reconstruct without resyncing', resyncRate < 0.05,
          `${net.resyncs} resyncs over ${net.applied} snapshots`);
+
+    // ---- vehicles ----
+    // Both combat maps declare at least one buggy. It must be rendered, and
+    // its state must be arriving on the snapshot rather than a side channel.
+    const vehicles = await a.page.evaluate(() => {
+      const g = window.titan;
+      const list = Array.from(g.vehicleEntities.values()).map((v) => ({
+        id: v.next.state.id,
+        defId: v.next.state.defId,
+        inScene: !!v.rig.root.parent,
+        wheels: v.rig.wheels.length,
+      }));
+      return { count: list.length, list, seated: g.localVehicleId };
+    });
+    step('vehicles arrive on the snapshot and are rendered',
+         vehicles.count >= 1 && vehicles.list.every((v) => v.inScene && v.wheels === 4),
+         JSON.stringify(vehicles.list));
+
+    // A board request from across the map must be refused by the server —
+    // the client asks, the server decides. We are at spawn, far from any pad.
+    if (vehicles.count >= 1) {
+      const target = vehicles.list[0].id;
+      await a.page.evaluate((id) => {
+        window.titan.net.send({ type: 'enter_vehicle', vehicleId: id });
+      }, target);
+      await a.page.waitForTimeout(600);
+      const after = await a.page.evaluate(() => ({
+        seated: window.titan.localVehicleId,
+        prompt: document.querySelector('[data-el="interact"]')?.style.display,
+        connected: window.titan.net.state,
+      }));
+      step('server refuses boarding from out of range (client stays on foot, not kicked)',
+           after.seated === null && after.connected !== 'disconnected',
+           JSON.stringify(after));
+    }
+
+    // ---- actually board, drive and dismount ----
+    // The spawn room is walled, so a straight walk to the pad stalls. Use the
+    // developer teleport instead — a real dev-tools command that a production
+    // server refuses (devTools is forced off there). Then press the real
+    // interact key: from here on nothing is test-only.
+    const walkOutcome = await a.page.evaluate(async () => {
+      const g = window.titan;
+      const p = g.prediction.state.position;
+      let best = null;
+      for (const v of g.vehicleEntities.values()) {
+        const s = v.next.state;
+        const d = Math.hypot(s.pos[0] - p.x, s.pos[2] - p.z);
+        if (!best || d < best.d) best = { d, x: s.pos[0], y: s.pos[1], z: s.pos[2], yaw: s.yaw, id: s.id };
+      }
+      if (!best) return { ok: false, why: 'no vehicle' };
+      // Stand 1.8m to the vehicle's side, inside the 3.2m boarding range.
+      g.net.send({ type: 'dev_command', command: { kind: 'teleport', x: best.x + 1.8, y: best.y + 0.2, z: best.z } });
+      const start = performance.now();
+      while (performance.now() - start < 5000) {
+        const q = g.prediction.state.position;
+        const d = Math.hypot(best.x - q.x, best.z - q.z);
+        if (d < 2.6) return { ok: true, d, id: best.id, ms: performance.now() - start };
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { ok: false, why: 'teleport not reflected', d: Math.hypot(best.x - g.prediction.state.position.x, best.z - g.prediction.state.position.z) };
+    });
+
+    if (!walkOutcome.ok) {
+      skip('board, drive and dismount a vehicle from the browser',
+           `could not reach a pad on foot: ${JSON.stringify(walkOutcome)}`);
+    } else {
+      await a.page.waitForTimeout(400);
+      const promptBefore = await a.page.evaluate(() =>
+        document.querySelector('[data-el="interact"]')?.textContent?.trim() ?? '');
+      await a.page.keyboard.press('KeyF');
+      await a.page.waitForTimeout(700);
+      const boarded = await a.page.evaluate(() => ({
+        seated: window.titan.localVehicleId,
+        viewModelVisible: window.titan.viewModel.root?.visible ?? null,
+        prompt: document.querySelector('[data-el="interact"]')?.textContent?.trim() ?? '',
+      }));
+      step('pressing F beside a vehicle boards it (server-confirmed)',
+           boarded.seated !== null && promptBefore.length > 0,
+           `prompt before="${promptBefore}" -> ${JSON.stringify(boarded)}`);
+
+      if (boarded.seated !== null) {
+        const before = await a.page.evaluate(() => {
+          const v = window.titan.vehicleEntities.get(window.titan.localVehicleId);
+          return { x: v.next.state.pos[0], z: v.next.state.pos[2], cam: [...window.titan.renderer.camera.position.toArray()] };
+        });
+        await a.page.keyboard.down('KeyW');
+        await a.page.waitForTimeout(2500);
+        await a.page.keyboard.up('KeyW');
+        await a.page.waitForTimeout(400);
+        const after = await a.page.evaluate(() => {
+          const v = window.titan.vehicleEntities.get(window.titan.localVehicleId);
+          return { x: v.next.state.pos[0], z: v.next.state.pos[2], speed: v.next.state.speed,
+                   driver: v.next.state.driverId === window.titan.net.playerId,
+                   cam: [...window.titan.renderer.camera.position.toArray()] };
+        });
+        const drove = Math.hypot(after.x - before.x, after.z - before.z);
+        const camMoved = Math.hypot(after.cam[0] - before.cam[0], after.cam[2] - before.cam[2]);
+        step('holding W drives the vehicle and the camera rides in it',
+             after.driver && drove > 1 && camMoved > 1,
+             `vehicle moved ${drove.toFixed(1)}m, camera ${camMoved.toFixed(1)}m`);
+
+        await a.page.keyboard.press('KeyF');
+        await a.page.waitForTimeout(700);
+        const exited = await a.page.evaluate(() => ({
+          seated: window.titan.localVehicleId,
+          viewModelVisible: window.titan.viewModel.root?.visible ?? null,
+        }));
+        step('pressing F again dismounts', exited.seated === null, JSON.stringify(exited));
+      }
+    }
   }
 
   // ---- perf ----

@@ -56,8 +56,12 @@ import {
   type ServerMessage,
   type ServerSnapshot,
   type Vec3,
+  type VehicleSnapshot,
   ClientMessageType,
+  INTERPOLATION_DELAY_MS,
   LogLevel,
+  lerp,
+  wrapAngle,
 } from '@titan/shared';
 
 import { SettingsStore, suggestPreset, type Settings } from './Settings.js';
@@ -67,6 +71,7 @@ import { CameraController } from '../render/CameraController.js';
 import { ViewModel } from '../render/ViewModel.js';
 import { VfxSystem } from '../render/Vfx.js';
 import { buildCharacter, disposeCharacter, poseCharacter, type CharacterRig } from '../render/CharacterModels.js';
+import { buildVehicle, disposeVehicle, updateVehicleRig, type VehicleRig } from '../render/VehicleModels.js';
 import { InputManager } from '../input/InputManager.js';
 import { AudioEngine } from '../audio/AudioEngine.js';
 import { MusicEngine } from '../audio/MusicEngine.js';
@@ -83,6 +88,36 @@ const log = createLogger('Game');
 interface RemoteEntity {
   rig: CharacterRig;
   lastSeen: number;
+}
+
+/** One authoritative vehicle sample, stamped with the server time it describes. */
+interface VehicleSample {
+  serverTimeMs: number;
+  state: VehicleSnapshot;
+}
+
+interface VehicleEntity {
+  rig: VehicleRig;
+  /** The two most recent samples; render time falls between them. */
+  prev: VehicleSample;
+  next: VehicleSample;
+}
+
+/** Mirrors the server's boarding range; the server re-checks, this only gates the prompt. */
+const BOARD_RANGE = 3.2;
+/** Where a seated player's eyes sit relative to the vehicle's origin. */
+const SEAT_EYE_HEIGHT = 1.35;
+/** How far a seated remote player's model is lifted off the vehicle's origin. */
+const SEAT_BODY_LIFT = 0.45;
+/** Driver on the left, passenger on the right — matches the model's seats. */
+const SEAT_OFFSET_X = 0.4;
+
+/** Human label for a KeyboardEvent.code, for prompts like "Press F to enter". */
+function keyLabel(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code === 'Space') return 'Space';
+  return code;
 }
 
 export class Game {
@@ -159,6 +194,12 @@ export class Game {
   private deltaResyncs = 0;
 
   private readonly remoteEntities = new Map<string, RemoteEntity>();
+  private readonly vehicleEntities = new Map<number, VehicleEntity>();
+  /** The vehicle the server says we are in, or null on foot. Authoritative. */
+  private localVehicleId: number | null = null;
+  /** Previous frame's buttons, for press (edge) detection on interact. */
+  private lastButtons = 0;
+  private vehicleInputSequence = 0;
 
   /** Frame timing. */
   private lastFrameTime = 0;
@@ -626,6 +667,142 @@ export class Game {
     }
 
     this.interpolator.ingest(snapshot.players, snapshot.serverTimeMs, this.net.playerId);
+    this.ingestVehicles(snapshot.vehicles, snapshot.serverTimeMs);
+
+    // Boarding and dismounting are decided by the server; the client only
+    // reacts. This is also where a refused board request resolves: nothing
+    // changes, and the player simply stays on foot.
+    if (local.vehicleId !== this.localVehicleId) {
+      const wasSeated = this.localVehicleId !== null;
+      this.localVehicleId = local.vehicleId;
+      const seated = local.vehicleId !== null;
+      if (seated && !wasSeated) this.onBoardVehicle();
+      else if (!seated && wasSeated) this.onExitVehicle(local.position);
+    }
+  }
+
+  // ============================================================== vehicles
+
+  private ingestVehicles(vehicles: VehicleSnapshot[], serverTimeMs: number): void {
+    const seen = new Set<number>();
+    for (const state of vehicles) {
+      seen.add(state.id);
+      let entity = this.vehicleEntities.get(state.id);
+      if (!entity) {
+        const rig = buildVehicle(state.defId, this.settings.current.graphics.shadows);
+        this.renderer.add(rig.root);
+        const sample = { serverTimeMs, state };
+        entity = { rig, prev: sample, next: sample };
+        this.vehicleEntities.set(state.id, entity);
+        continue;
+      }
+      // Ignore a sample older than the one we hold: snapshots can reorder.
+      if (serverTimeMs <= entity.next.serverTimeMs) continue;
+      entity.prev = entity.next;
+      entity.next = { serverTimeMs, state };
+    }
+    for (const [id, entity] of Array.from(this.vehicleEntities.entries())) {
+      if (seen.has(id)) continue;
+      this.renderer.remove(entity.rig.root);
+      disposeVehicle(entity.rig);
+      this.vehicleEntities.delete(id);
+    }
+  }
+
+  /**
+   * A vehicle's pose at render time, interpolated between its two newest
+   * samples on the same delayed clock remote players use — so a player
+   * standing on a moving buggy and the buggy itself agree about where it is.
+   */
+  private vehiclePose(entity: VehicleEntity): { position: Vec3; yaw: number; speed: number } {
+    const renderTime = this.net.serverNow() - INTERPOLATION_DELAY_MS;
+    const { prev, next } = entity;
+    const span = next.serverTimeMs - prev.serverTimeMs;
+    const t = span > 0 ? clamp((renderTime - prev.serverTimeMs) / span, 0, 1) : 1;
+    const a = prev.state;
+    const b = next.state;
+    return {
+      position: {
+        x: lerp(a.pos[0], b.pos[0], t),
+        y: lerp(a.pos[1], b.pos[1], t),
+        z: lerp(a.pos[2], b.pos[2], t),
+      },
+      yaw: a.yaw + wrapAngle(b.yaw - a.yaw) * t,
+      speed: lerp(a.speed, b.speed, t),
+    };
+  }
+
+  private updateVehicles(dt: number): void {
+    for (const entity of this.vehicleEntities.values()) {
+      const pose = this.vehiclePose(entity);
+      const state = entity.next.state;
+      entity.rig.root.position.set(pose.position.x, pose.position.y, pose.position.z);
+      entity.rig.root.rotation.y = pose.yaw;
+      updateVehicleRig(entity.rig, pose.speed, state.health, state.destroyed, dt);
+    }
+  }
+
+  /** The nearest boardable vehicle within reach of `position`, or null. */
+  private boardableVehicleNear(position: Vec3): VehicleEntity | null {
+    let best: VehicleEntity | null = null;
+    let bestDistance = BOARD_RANGE;
+    for (const entity of this.vehicleEntities.values()) {
+      const state = entity.next.state;
+      if (state.destroyed) continue;
+      const occupants = (state.driverId ? 1 : 0) + state.passengerIds.length;
+      if (occupants >= entity.rig.def.seats) continue;
+      const pose = this.vehiclePose(entity);
+      const distance = Math.hypot(
+        pose.position.x - position.x,
+        pose.position.y - position.y,
+        pose.position.z - position.z,
+      );
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = entity;
+      }
+    }
+    return best;
+  }
+
+  /** Where the local player's eyes are while seated in `entity`. */
+  private seatedEye(entity: VehicleEntity): Vec3 {
+    const pose = this.vehiclePose(entity);
+    const isDriver = entity.next.state.driverId === this.net.playerId;
+    const side = isDriver ? -SEAT_OFFSET_X : SEAT_OFFSET_X;
+    // Seat offset is in the vehicle's local frame; rotate it by the yaw.
+    const cos = Math.cos(pose.yaw);
+    const sin = Math.sin(pose.yaw);
+    return {
+      x: pose.position.x + side * cos,
+      y: pose.position.y + SEAT_EYE_HEIGHT,
+      z: pose.position.z - side * sin,
+    };
+  }
+
+  private onBoardVehicle(): void {
+    // No weapon while riding — the buggy is a mobility tool, not a gun
+    // platform (see its balance note). Clearing the prediction history stops
+    // the reconciler replaying foot inputs on top of the seat position.
+    this.viewModel.setVisible(false);
+    this.pendingInputs.length = 0;
+    this.audio.play('sfx.ui.click');
+  }
+
+  private onExitVehicle(position: Vec3): void {
+    this.viewModel.setVisible(true);
+    // The server placed us beside the vehicle; start predicting from there.
+    this.prediction.teleport(position, this.yaw);
+    this.audio.play('sfx.ui.click');
+  }
+
+  private clearVehicles(): void {
+    for (const entity of this.vehicleEntities.values()) {
+      this.renderer.remove(entity.rig.root);
+      disposeVehicle(entity.rig);
+    }
+    this.vehicleEntities.clear();
+    this.localVehicleId = null;
   }
 
   private onCombatEvent(
@@ -743,6 +920,7 @@ export class Game {
     this.vfx.clear();
     this.interpolator.clear();
     this.clearRemoteEntities();
+    this.clearVehicles();
 
     // Spawn is corrected by the first snapshot; this only avoids a frame at
     // the origin.
@@ -868,8 +1046,52 @@ export class Game {
     }
     if ((frame.buttons & InputButton.Inspect) !== 0) this.viewModel.inspect();
 
+    // ---- Vehicles ---------------------------------------------------------
+    // Interact is a press, not a hold: holding F must not spam board requests
+    // (which the rate limiter would count) or bounce in and out of the seat.
+    const interactPressed =
+      (frame.buttons & InputButton.Interact) !== 0 && (this.lastButtons & InputButton.Interact) === 0;
+    this.lastButtons = frame.buttons;
+
+    const seatedIn = this.localVehicleId !== null ? this.vehicleEntities.get(this.localVehicleId) ?? null : null;
+    const nearby = this.alive && !seatedIn ? this.boardableVehicleNear(this.prediction.state.position) : null;
+
+    if (interactPressed && this.alive) {
+      if (seatedIn) {
+        this.net.send({ type: ClientMessageType.ExitVehicle });
+      } else if (nearby) {
+        // The server re-checks range, seats and liveness; a refusal simply
+        // never changes local.vehicleId.
+        this.net.send({ type: ClientMessageType.EnterVehicle, vehicleId: nearby.next.state.id });
+      }
+    }
+
+    const interactKey = keyLabel(this.settings.current.controls.keybinds.interact ?? 'KeyF');
+    this.hud.showInteractPrompt(
+      seatedIn
+        ? t('hud.exit_vehicle', { key: interactKey })
+        : nearby
+          ? t('hud.enter_vehicle', { key: interactKey })
+          : null,
+    );
+
     // ---- Predict ----------------------------------------------------------
-    if (this.alive) {
+    if (this.alive && seatedIn) {
+      // Seated: the server moves us with the vehicle, so there is nothing to
+      // predict. We still send inputs so our view angles and snapshot acks
+      // keep flowing, but with movement and buttons cleared — no firing blind
+      // from a seat with the view model hidden.
+      this.inputSequence++;
+      this.pendingInputs.push(
+        this.input.buildInput(
+          { ...frame, moveX: 0, moveZ: 0, buttons: 0 },
+          this.inputSequence,
+          Math.min(dt * 1000, 50),
+          this.yaw,
+          this.pitch,
+        ),
+      );
+    } else if (this.alive) {
       this.inputSequence++;
       const input = this.input.buildInput(
         frame,
@@ -929,13 +1151,33 @@ export class Game {
         inputs: this.pendingInputs.splice(0, 12),
         lastAckedSnapshot: this.lastAckedSnapshot,
       });
+
+      // Driving input rides the same cadence. Only the driver's is honoured
+      // server-side; a passenger sending it is ignored there, so we don't
+      // bother sending it at all.
+      if (seatedIn && seatedIn.next.state.driverId === this.net.playerId) {
+        this.vehicleInputSequence++;
+        this.net.send({
+          type: ClientMessageType.VehicleInput,
+          throttle: frame.moveZ,
+          steer: frame.moveX,
+          brake: (frame.buttons & InputButton.Crouch) !== 0,
+          deltaMs: Math.min(dt * 1000, 50),
+          sequence: this.vehicleInputSequence,
+        });
+      }
     }
 
     // ---- Camera and view model -------------------------------------------
     const renderPosition = this.prediction.renderPosition();
     const state = this.prediction.state;
-    const eye = eyePosition({ ...state, position: renderPosition });
-    const speed = Math.hypot(state.velocity.x, state.velocity.z);
+    // Seated, the eye follows the interpolated vehicle rather than the
+    // predicted body: the body is pinned to the vehicle by the server anyway,
+    // and the vehicle's pose is the smooth one.
+    const eye = seatedIn ? this.seatedEye(seatedIn) : eyePosition({ ...state, position: renderPosition });
+    const speed = seatedIn
+      ? Math.abs(this.vehiclePose(seatedIn).speed)
+      : Math.hypot(state.velocity.x, state.velocity.z);
 
     this.camera.update({
       eye,
@@ -943,8 +1185,8 @@ export class Game {
       pitch: this.pitch,
       ads: runtime?.adsProgress ?? 0,
       adsFov: weapon?.adsFov ?? 55,
-      speed,
-      sprinting: state.state === MovementState.Sprint,
+      speed: seatedIn ? 0 : speed, // no head-bob in a seat
+      sprinting: state.state === MovementState.Sprint && !seatedIn,
       grounded: state.grounded,
       landImpact: this.lastLandImpact,
       recoilPitch: this.recoilPitch,
@@ -965,7 +1207,8 @@ export class Game {
       dt,
     });
 
-    // ---- Remote players ---------------------------------------------------
+    // ---- Remote players and vehicles --------------------------------------
+    this.updateVehicles(dt);
     this.updateRemotePlayers(dt);
 
     // ---- Audio listener ---------------------------------------------------
@@ -1028,7 +1271,14 @@ export class Game {
       }
 
       entity.lastSeen = performance.now();
-      entity.rig.root.position.set(player.position.x, player.position.y, player.position.z);
+      // A seated player is pinned to their vehicle's origin by the server; lift
+      // them into the seat so they ride in it rather than through the floor.
+      const seated = EntityInterpolator.isInVehicle(player);
+      entity.rig.root.position.set(
+        player.position.x,
+        player.position.y + (seated ? SEAT_BODY_LIFT : 0),
+        player.position.z,
+      );
       entity.rig.root.rotation.y = player.yaw;
 
       // A phased player is drawn faint rather than removed, so a skilled
@@ -1042,8 +1292,8 @@ export class Game {
       entity.rig.root.visible = player.alive || !player.alive; // corpses stay visible briefly
 
       poseCharacter(entity.rig, {
-        state: player.state,
-        speed: player.speed,
+        state: seated ? MovementState.Idle : player.state,
+        speed: seated ? 0 : player.speed,
         pitch: player.pitch,
         aiming: EntityInterpolator.isAiming(player),
         alive: player.alive,
@@ -1191,6 +1441,7 @@ export class Game {
       <div class="row"><span>Particles</span><span>${vfx.particles}</span></div>
       <div class="row"><span>Voices</span><span>${audio.voices}</span></div>
       <div class="row"><span>Remotes</span><span>${this.remoteEntities.size}</span></div>
+      <div class="row"><span>Vehicles</span><span>${this.vehicleEntities.size}${this.localVehicleId !== null ? ' (seated)' : ''}</span></div>
       <div class="row"><span>Delta resyncs</span><span>${this.deltaResyncs}</span></div>
       <div class="row warn"><span>Assets</span><span>procedural</span></div>`;
   }
@@ -1219,6 +1470,7 @@ export class Game {
     this.vfx.dispose();
     this.viewModel.dispose();
     this.clearRemoteEntities();
+    this.clearVehicles();
     this.renderer.dispose();
   }
 }

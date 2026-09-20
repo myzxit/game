@@ -35,6 +35,11 @@ open a console and reach the game object.
 This is why four steps of the browser E2E report as *skipped* rather than passed
 when run against a release bundle — the hook they need genuinely is not there.
 
+The same flag gates the `dev_command` protocol message (teleport, give coins,
+set health). A production server refuses it with `error.forbidden` and marks
+the sender as suspicious. Dev-granted coins go through the normal economy path,
+so they appear in the audit ledger like any other grant.
+
 ## Builds
 
 | Build | Command | Characteristics |

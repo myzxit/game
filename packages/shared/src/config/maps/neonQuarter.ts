@@ -293,5 +293,9 @@ export const NEON_QUARTER: MapDefinition = {
   ],
 
   npcSpawns: [],
-  vehicleSpawns: [{ vehicleId: 'scout_buggy', at: vec3(-44, 0.4, 44), yaw: Math.PI }],
+  // Kerbside on the west street. z=44 put the pad inside the building wall
+  // that runs along z≈44; the maps test now guards against that.
+  // Faces north down the street (12m of open road); facing the building it
+  // sits beside gave it a two-metre run-up into a wall.
+  vehicleSpawns: [{ vehicleId: 'scout_buggy', at: vec3(-44, 0.4, 40), yaw: 0 }],
 };

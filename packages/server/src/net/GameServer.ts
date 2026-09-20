@@ -427,6 +427,10 @@ export class GameServer {
         this.handleVehicle(playerId, message);
         break;
 
+      case ClientMessageType.DevCommand:
+        this.handleDevCommand(connection, profile, message.command);
+        break;
+
       default:
         break;
     }
@@ -701,12 +705,6 @@ export class GameServer {
         type: ServerMessageType.MatchState,
         ...match.instance.matchStatePayload(),
       });
-      if (match.instance.mapId !== HUB_MAP_ID) {
-        this.broadcastToMatch(matchId, {
-          type: ServerMessageType.VehicleState,
-          vehicles: [],
-        });
-      }
     }
 
     // Drop stale connections and expired sessions.
@@ -956,6 +954,53 @@ export class GameServer {
   }
 
   /**
+   * Developer tools: teleport, coins, health.
+   *
+   * Gated on the server's devTools flag, which `config.ts` forces off in a
+   * production build regardless of environment variables. A player sending
+   * one to a release server gets a Forbidden error and a suspicious-request
+   * mark, since a stock client never sends it.
+   */
+  private handleDevCommand(
+    connection: Connection,
+    profile: PlayerProfile,
+    command: Extract<ClientMessage, { type: ClientMessageType.DevCommand }>['command'],
+  ): void {
+    if (!this.options.devTools) {
+      connection.sendError(ErrorCode.Forbidden, 'error.forbidden', false, ClientMessageType.DevCommand);
+      this.antiCheat.reportProtocolViolation(profile.id, 'dev command on a release server', true);
+      return;
+    }
+
+    const now = Date.now();
+    switch (command.kind) {
+      case 'teleport': {
+        const match = this.matchFor(profile.id);
+        if (!match) return;
+        match.instance.devTeleport(profile.id, { x: command.x, y: command.y, z: command.z });
+        break;
+      }
+      case 'give_coins': {
+        // Goes through the real economy path, caps and ledger included, so
+        // dev-granted coins are as auditable as earned ones.
+        this.economy.grant(profile, Currency.Coins, command.amount, { reason: 'dev_command' }, now);
+        connection.send(this.currencyMessage(profile));
+        break;
+      }
+      case 'set_health': {
+        const match = this.matchFor(profile.id);
+        const player = match?.instance.players.get(profile.id);
+        if (!player) return;
+        player.health = Math.min(player.maxHealth, command.health);
+        break;
+      }
+      default:
+        break;
+    }
+    log.info('dev command', { playerId: profile.id, kind: command.kind });
+  }
+
+  /**
    * Route a board / drive / exit request to the match's VehicleSystem.
    *
    * Nothing here decides anything: VehicleSystem re-checks proximity, seat
@@ -972,17 +1017,15 @@ export class GameServer {
     const vehicles = match.instance.vehicleSystem;
 
     switch (message.type) {
-      case ClientMessageType.EnterVehicle: {
-        const vehicle = vehicles.enter(player, message.vehicleId);
+      case ClientMessageType.EnterVehicle:
         // A refusal is normal (out of range, full, destroyed) and not an error:
-        // the client simply stays on foot and the next snapshot says so.
-        if (vehicle) this.broadcastVehicleState(match);
+        // the client simply stays on foot. Either way the outcome reaches every
+        // client in the next snapshot, which carries vehicle state in full.
+        vehicles.enter(player, message.vehicleId);
         break;
-      }
 
       case ClientMessageType.ExitVehicle:
         vehicles.exit(player);
-        this.broadcastVehicleState(match);
         break;
 
       case ClientMessageType.VehicleInput:
@@ -995,12 +1038,6 @@ export class GameServer {
     }
   }
 
-  private broadcastVehicleState(match: ActiveMatch): void {
-    match.instance.broadcast({
-      type: ServerMessageType.VehicleState,
-      vehicles: match.instance.vehicleSystem.snapshot(),
-    });
-  }
 
   private handleParty(connection: Connection, profile: PlayerProfile, message: ClientMessage): void {
     const level = levelFromTotalXp(profile.totalXp).level;

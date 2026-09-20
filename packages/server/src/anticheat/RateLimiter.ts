@@ -77,6 +77,7 @@ const MESSAGE_CLASS: Partial<Record<ClientMessageType, LimitClass>> = {
   [ClientMessageType.SetLoadout]: LimitClass.Action,
   [ClientMessageType.EnterVehicle]: LimitClass.Action,
   [ClientMessageType.ExitVehicle]: LimitClass.Action,
+  [ClientMessageType.DevCommand]: LimitClass.Action,
   [ClientMessageType.SpectateTarget]: LimitClass.Action,
   [ClientMessageType.QueueJoin]: LimitClass.Action,
   [ClientMessageType.QueueLeave]: LimitClass.Action,

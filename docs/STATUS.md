@@ -10,21 +10,21 @@ Last verified, all in one sweep:
 | Check | Result |
 | --- | --- |
 | `npm run typecheck` | clean |
-| `npm test` | 175/175 |
-| `npm run qa:e2e` (dev bundle) | 21/21 steps |
+| `npm test` | 193/193 |
+| `npm run qa:e2e` (dev bundle) | 26/26 steps |
 | `npm run qa:e2e` (release bundle) | 16/16 steps, 4 skipped |
 | `npm run qa:server` | 13/13 checks |
 
-The 4 skipped steps need the dev-only diagnostics hook, which genuinely is not
-present in a release bundle. They report as *skipped* rather than passing
-vacuously.
+The skipped steps need the dev-only diagnostics hook (and, for the vehicle
+board test, the dev-only teleport), which genuinely are not present in a
+release bundle. They report as *skipped* rather than passing vacuously.
 
 ## How to check these claims yourself
 
 ```bash
 npm install
 npm run build
-npm test                      # 175 unit tests
+npm test                      # 193 unit tests
 
 npm run dev:server            # terminal 1
 npm run dev:client            # terminal 2
@@ -51,7 +51,7 @@ npm run qa:server             # protocol-level: economy, security, reconnect
 | Client prediction + reconciliation | Working | Measured live: prediction error 0.000–0.32m under software rendering at ~4fps. |
 | Entity interpolation | Working | Renders 100ms in the past, capped extrapolation, short-way angle interpolation. |
 | Lag compensation | Working | Rewinds hitboxes to `now - (halfRtt + interpolationDelay)`, bounded by `MAX_REWIND_MS` so peeker's advantage cannot be amplified. |
-| Delta snapshots | Working | 0 resyncs over 509 snapshots in a live match. Quantised positions (cm) and angles (1/1000 rad). |
+| Delta snapshots | Working | 0 resyncs over 725 snapshots in a live match; vehicles ride in every snapshot in full. Quantised positions (cm) and angles (1/1000 rad). |
 | Reconnection | Working | Session tokens with a grace window; match state is restored, not restarted. |
 | Collision | Working | AABB world with a uniform grid. Deliberately not a triangle mesh, so client and server produce identical results. |
 
@@ -85,7 +85,7 @@ or design is taken from any existing game.
 | Quests | 12 daily pool, 5 weekly pool, 5 story, 4 secret | Working. Secrets stay hidden until discovered. |
 | Achievements | 11 | Working. |
 | NPCs | 5 | Working, with server-gated dialogue graphs. |
-| Vehicles | 1 (scout buggy) | **Partial — see below.** |
+| Vehicles | 1 (scout buggy) | Working — board, drive, ride along, dismount; see notes below. |
 | Rank tiers | 9, 1 season | Working. |
 | Login rewards | 28-day table | Working. |
 
@@ -118,17 +118,37 @@ or design is taken from any existing game.
 
 ## Known gaps
 
-### Vehicles — partial
+### Vehicles — working, with two honest caveats
 
-The server side is complete and tested: vehicles spawn from map data, and
-boarding, driving, seat contention, occupant sync, damage and destruction all
-work and are covered by 6 tests. Proximity is validated server-side, so a client
-cannot board across the map.
+Server side: vehicles spawn from map data; boarding, driving on both combat
+maps, seat contention, occupant sync, damage, destruction and the wire format
+are simulated authoritatively and covered by 8 tests. Proximity is validated
+server-side, so a client cannot board across the map. Measured live: 0 to
+17.9 m/s in one second (the definition's 14 m/s²), 48 damage on hitting a wall
+at that speed, exactly as the collision-damage formula says.
 
-**The client has no vehicle support at all** — no rendering, no board prompt, no
-drive input, no camera mode. So in practice *no player can currently use a
-vehicle*, even though the simulation beneath them is real. This is listed as
-Partial rather than Working for exactly that reason.
+Two of the three vehicle pads originally sat inside solid geometry (a crate
+stack, a building wall) and the third faced a wall two metres ahead; the buggy
+"worked" but crawled at 0.07 m/s. `maps.test.ts` now sweeps every pad's
+footprint and its forward run-up against the collision world, so a map edit
+cannot reintroduce that silently.
+
+Client side: vehicles arrive in every snapshot, are rendered procedurally (body,
+roll cage, seats, four spinning wheels, headlights, damage scorching), show a
+localized board/dismount prompt within range, and route W/S/A/D into drive
+input while seated with the camera riding in the seat. The browser E2E boards,
+drives and dismounts a real buggy through the real interact key.
+
+Caveats:
+
+- **The driver sees the vehicle 100ms in the past.** Vehicles are interpolated
+  on the same delayed clock as remote players; there is no client-side vehicle
+  prediction. Driving feels slightly laggy compared to on-foot movement, which
+  *is* predicted. Adding vehicle prediction is a contained piece of work
+  (the server's `driveVehicle` is deterministic) but is not done.
+- **No engine audio.** The buggy's definition names an engine sound; no
+  synthesis recipe exists for it yet, so it is silent. Its balance note promises
+  a loud engine — that promise is currently unmet.
 
 ### Replay — groundwork only
 
@@ -161,11 +181,21 @@ client already receives every player's snapshot — which also means it currentl
 has no server-side enforcement of *whom* a dead player may spectate. In a
 competitive release that should be restricted to teammates.
 
+### Developer tools
+
+`dev_command` (teleport, give coins, set health) is a real protocol message,
+rate-limited like any action. The server honours it only when started with dev
+tools on; `config.ts` forces that flag off in a production build regardless of
+environment variables, and a release server answers it with a Forbidden error
+plus a suspicious-request mark, since a stock client never sends it. The
+browser E2E uses the teleport to reach a vehicle pad; that is the only test-time
+use, and nothing else in the game depends on it.
+
 ### Tests
 
 175 unit tests plus the browser E2E. Not covered by automated tests: the
 renderer's visual output (verified by screenshot inspection instead), audio
-output, gamepad, and touch.
+output, gamepad, touch, and vehicle handling feel (only its mechanics).
 
 ## Not attempted
 
@@ -175,6 +205,6 @@ present:
 - Authored 3D models, textures, animations and audio (see ASSETS.md).
 - A real payment integration (see MONETIZATION.md).
 - Replay playback.
-- Client-side vehicle control.
+- Client-side vehicle prediction and engine audio (vehicles themselves work).
 - Japanese and Chinese localization (declared as planned; the string tables do
   not exist).

@@ -127,6 +127,7 @@ export class SnapshotBuilder {
         pos: quantizePos(p.position),
         weaponId: p.weaponId,
       })),
+      vehicles: this.match.vehicleSystem.snapshot(),
       worldEvents: [],
     };
 

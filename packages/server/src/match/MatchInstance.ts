@@ -1198,6 +1198,21 @@ export class MatchInstance {
   }
 
   /**
+   * Developer-tools teleport. Not reachable by players: the connection layer
+   * only calls this when the server was started with dev tools on, which a
+   * production build cannot be. Clears velocity so the player does not carry
+   * momentum through the jump, and leaves a seated player where they are —
+   * the vehicle owns their position.
+   */
+  devTeleport(playerId: string, position: Vec3): boolean {
+    const player = this.players.get(playerId);
+    if (!player || !player.alive || player.vehicleId !== null) return false;
+    player.movement.position = { ...position };
+    player.movement.velocity = { x: 0, y: 0, z: 0 };
+    return true;
+  }
+
+  /**
    * The authoritative vehicle system, so the connection layer can route a
    * client's board / drive / exit requests into it. Every one of its entry
    * points re-validates against server state — proximity, seat count, liveness

@@ -233,6 +233,10 @@ export class EntityInterpolator {
   static isPhased(player: InterpolatedPlayer): boolean {
     return (player.flags & SnapshotFlag.Phased) !== 0;
   }
+
+  static isInVehicle(player: InterpolatedPlayer): boolean {
+    return (player.flags & SnapshotFlag.InVehicle) !== 0;
+  }
   static isScanned(player: InterpolatedPlayer): boolean {
     return (player.flags & SnapshotFlag.Scanned) !== 0;
   }

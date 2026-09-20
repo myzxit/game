@@ -367,7 +367,12 @@ export const FOUNDRY_REACH: MapDefinition = {
 
   npcSpawns: [],
   vehicleSpawns: [
-    { vehicleId: 'scout_buggy', at: vec3(-48, 0.4, -40), yaw: 0 },
-    { vehicleId: 'scout_buggy', at: vec3(-48, 0.4, 40), yaw: Math.PI },
+    // On the grass strip beside the container yard. The pad used to sit at
+    // z=-40, inside the crate stack — the maps test now guards against that.
+    // Each pad faces its open run-up (the maps test sweeps the footprint
+    // forward): the north pad looks down the grass strip, the south pad back
+    // up it. They used to face the crate stack and the perimeter wall.
+    { vehicleId: 'scout_buggy', at: vec3(-48, 0.4, -37), yaw: Math.PI },
+    { vehicleId: 'scout_buggy', at: vec3(-48, 0.4, 40), yaw: 0 },
   ],
 };

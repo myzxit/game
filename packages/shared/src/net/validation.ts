@@ -492,6 +492,38 @@ export function validateClientMessage(raw: unknown): ValidationResult<ClientMess
       return pass({ type: ClientMessageType.AckSnapshot, snapshotId: Math.floor(raw.snapshotId) });
     }
 
+    case ClientMessageType.DevCommand: {
+      // Shape-checked here like everything else; *whether* the server honours
+      // it is decided by its devTools setting, not by the validator.
+      const c = raw.command;
+      if (!isPlainObject(c)) return reject('bad dev command', true);
+      switch (c.kind) {
+        case 'teleport':
+          // Checked one by one so each narrows to number; `every` would not.
+          if (!inRange(c.x, -5000, 5000) || !inRange(c.y, -5000, 5000) || !inRange(c.z, -5000, 5000)) {
+            return reject('bad teleport target', true);
+          }
+          return pass({
+            type: ClientMessageType.DevCommand,
+            command: { kind: 'teleport', x: c.x, y: c.y, z: c.z },
+          });
+        case 'give_coins':
+          if (!inRange(c.amount, 0, 1_000_000)) return reject('bad coin amount', true);
+          return pass({
+            type: ClientMessageType.DevCommand,
+            command: { kind: 'give_coins', amount: Math.floor(c.amount) },
+          });
+        case 'set_health':
+          if (!inRange(c.health, 0, 1000)) return reject('bad health', true);
+          return pass({
+            type: ClientMessageType.DevCommand,
+            command: { kind: 'set_health', health: c.health },
+          });
+        default:
+          return reject('unknown dev command', true);
+      }
+    }
+
     // Messages with no payload beyond their type.
     case ClientMessageType.QueueLeave:
     case ClientMessageType.PartyCreate:

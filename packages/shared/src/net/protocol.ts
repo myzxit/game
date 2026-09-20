@@ -70,6 +70,13 @@ export enum ClientMessageType {
   EnterVehicle = 'enter_vehicle',
   ExitVehicle = 'exit_vehicle',
   VehicleInput = 'vehicle_input',
+
+  /**
+   * Developer tools. Accepted only by a server running with dev tools
+   * enabled, which a production build cannot be; anything else answers with
+   * an error and a suspicious-request flag.
+   */
+  DevCommand = 'dev_command',
   AckSnapshot = 'ack_snapshot',
 }
 
@@ -237,6 +244,16 @@ export interface ClientEnterVehicle {
 export interface ClientExitVehicle {
   type: ClientMessageType.ExitVehicle;
 }
+export type DevCommand =
+  | { kind: 'teleport'; x: number; y: number; z: number }
+  | { kind: 'give_coins'; amount: number }
+  | { kind: 'set_health'; health: number };
+
+export interface ClientDevCommand {
+  type: ClientMessageType.DevCommand;
+  command: DevCommand;
+}
+
 export interface ClientVehicleInput {
   type: ClientMessageType.VehicleInput;
   throttle: number;
@@ -285,6 +302,7 @@ export type ClientMessage =
   | ClientEnterVehicle
   | ClientExitVehicle
   | ClientVehicleInput
+  | ClientDevCommand
   | ClientAckSnapshot;
 
 // ==========================================================================
@@ -317,7 +335,6 @@ export enum ServerMessageType {
   ChatMessage = 'chat',
   ServerStatus = 'server_status',
   SecretDiscovered = 'secret_discovered',
-  VehicleState = 'vehicle_state',
 }
 
 export interface ServerHandshakeAck {
@@ -406,6 +423,26 @@ export interface LocalPlayerState {
   vehicleId: number | null;
 }
 
+/**
+ * One vehicle's authoritative state.
+ *
+ * Carried in full on every snapshot rather than delta-compressed: a map holds
+ * one or two vehicles, so the whole list is smaller than a single player delta,
+ * and it lets the client interpolate vehicles on the same clock as players.
+ */
+export interface VehicleSnapshot {
+  id: number;
+  defId: string;
+  pos: [number, number, number];
+  yaw: number;
+  /** Forward speed in m/s; negative is reverse. */
+  speed: number;
+  health: number;
+  driverId: PlayerId | null;
+  passengerIds: PlayerId[];
+  destroyed: boolean;
+}
+
 export interface ServerSnapshot {
   type: ServerMessageType.Snapshot;
   id: number;
@@ -418,6 +455,7 @@ export interface ServerSnapshot {
   removed: PlayerId[];
   local: LocalPlayerState;
   projectiles: { id: number; pos: [number, number, number]; weaponId: string }[];
+  vehicles: VehicleSnapshot[];
   /** Transient world changes: broken glass, deployed barriers. */
   worldEvents: WorldEvent[];
 }
@@ -704,20 +742,6 @@ export interface ServerSecretDiscovered {
   nameKey: string;
 }
 
-export interface ServerVehicleState {
-  type: ServerMessageType.VehicleState;
-  vehicles: {
-    id: number;
-    defId: string;
-    pos: [number, number, number];
-    yaw: number;
-    speed: number;
-    health: number;
-    driverId: PlayerId | null;
-    passengerIds: PlayerId[];
-    destroyed: boolean;
-  }[];
-}
 
 export interface ServerProfileSync {
   type: ServerMessageType.ProfileSync;
@@ -761,7 +785,6 @@ export type ServerMessage =
   | ServerChat
   | ServerStatus
   | ServerSecretDiscovered
-  | ServerVehicleState;
 
 /** Snapshot player flag bits. */
 export const enum SnapshotFlag {

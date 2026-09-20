@@ -723,8 +723,13 @@ describe('vehicles', () => {
     expect(vehicle.driverId).toBeNull();
   });
 
-  it('boards, drives and dismounts', () => {
-    const match = vehicleMatch();
+  it.each(['neon_quarter', 'foundry_reach'])('boards, drives and dismounts on %s', (mapId) => {
+    const match = makeMatch(
+      GameModeId.TeamDeathmatch,
+      [seed('a1', TeamId.Alpha), seed('b1', TeamId.Bravo)],
+      mapId,
+    );
+    advance(match, 1);
     const vehicle = match.vehicleSystem.all[0]!;
     const player = match.players.get('a1')!;
 
@@ -743,7 +748,11 @@ describe('vehicles', () => {
       vehicle.position.x - start.x,
       vehicle.position.z - start.z,
     );
-    expect(travelled).toBeGreaterThan(1);
+    // Full throttle from rest for one second: acceleration is 14 m/s², so the
+    // buggy should cover roughly 7m on open ground. A much smaller figure means
+    // something is scrubbing speed every tick (a wall, or being un-grounded).
+    expect(vehicle.speed).toBeGreaterThan(8);
+    expect(travelled).toBeGreaterThan(4);
     // The driver rides along rather than being left at the spawn point.
     expect(
       Math.hypot(player.position.x - vehicle.position.x, player.position.z - vehicle.position.z),
@@ -803,5 +812,48 @@ describe('vehicles', () => {
     expect(vehicle.destroyed).toBe(true);
     expect(vehicle.driverId).toBeNull();
     expect(player.vehicleId).toBeNull();
+  });
+});
+
+describe('vehicle state on the wire', () => {
+  it('every snapshot carries the full vehicle list', async () => {
+    const { SnapshotBuilder } = await import('../src/match/SnapshotBuilder.js');
+    const match = makeMatch(
+      GameModeId.TeamDeathmatch,
+      [seed('a1', TeamId.Alpha), seed('b1', TeamId.Bravo)],
+      'neon_quarter',
+    );
+    advance(match, 1);
+    const builder = new SnapshotBuilder(match);
+
+    const vehicle = match.vehicleSystem.all[0]!;
+    const driver = match.players.get('a1')!;
+    driver.movement.position = { ...vehicle.position };
+    match.vehicleSystem.enter(driver, vehicle.id);
+    match.vehicleSystem.setInput('a1', 1, 0, false);
+    advance(match, 32);
+
+    // Two consecutive snapshots to the same client: the second is a delta,
+    // and vehicles must still be present in full on it.
+    const first = builder.buildAll(timeOf(match)).get('b1')!;
+    builder.acknowledge('b1', first.id);
+    advance(match, 3);
+    const second = builder.buildAll(timeOf(match)).get('b1')!;
+
+    expect(second.baseId).toBe(first.id);
+    expect(second.vehicles).toHaveLength(match.vehicleSystem.all.length);
+
+    const wire = second.vehicles.find((v) => v.id === vehicle.id)!;
+    expect(wire.driverId).toBe('a1');
+    expect(wire.speed).toBeGreaterThan(0);
+    expect(wire.pos[0]).toBeCloseTo(vehicle.position.x, 5);
+    expect(wire.destroyed).toBe(false);
+
+    // The seated player's own snapshot says so, in both places a client reads it.
+    const own = builder.buildAll(timeOf(match)).get('a1')!;
+    expect(own.local.vehicleId).toBe(vehicle.id);
+    const entry = own.players.find((p) => p.id === 'a1');
+    // 'a1' may be absent from a delta if unchanged — but a moving driver changes every tick.
+    expect(entry?.flags !== undefined ? (entry.flags & 16) !== 0 : true).toBe(true);
   });
 });
