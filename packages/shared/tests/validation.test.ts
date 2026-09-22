@@ -1,0 +1,147 @@
+/**
+ * Trust-boundary tests for the client→server message validator.
+ *
+ * The validator is the only thing standing between a hostile client and the
+ * simulation, so the interesting cases are the ones where being too strict is
+ * as damaging as being too lax: a legitimate client that gets disconnected for
+ * sending something the protocol documents as valid.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { ClientMessageType, validateClientMessage } from '../src/index.js';
+
+/** A minimal well-formed input, so an Input test only exercises the ack field. */
+const INPUT = {
+  sequence: 1,
+  deltaMs: 16,
+  moveX: 0,
+  moveZ: 0,
+  yaw: 0,
+  pitch: 0,
+  buttons: 0,
+  clientTimeMs: 1_000,
+};
+
+describe('snapshot acknowledgement', () => {
+  // A client that cannot reconstruct a delta acks -1 to ask for a full
+  // snapshot. Both ack paths carry that value, and both must accept it: when
+  // only the Input path did, every dropped snapshot disconnected the client
+  // with a protocol violation instead of resyncing it.
+  it('accepts the -1 resync request on the dedicated ack message', () => {
+    const result = validateClientMessage({
+      type: ClientMessageType.AckSnapshot,
+      snapshotId: -1,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toEqual({
+      type: ClientMessageType.AckSnapshot,
+      snapshotId: -1,
+    });
+  });
+
+  it('accepts the -1 resync request piggybacked on an input batch', () => {
+    const result = validateClientMessage({
+      type: ClientMessageType.Input,
+      inputs: [INPUT],
+      lastAckedSnapshot: -1,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a normal acknowledgement', () => {
+    const result = validateClientMessage({
+      type: ClientMessageType.AckSnapshot,
+      snapshotId: 41,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toEqual({
+      type: ClientMessageType.AckSnapshot,
+      snapshotId: 41,
+    });
+  });
+
+  it('still rejects ids below the resync sentinel', () => {
+    // -1 is a sentinel, not "any negative number".
+    for (const snapshotId of [-2, -100, Number.NEGATIVE_INFINITY]) {
+      expect(validateClientMessage({ type: ClientMessageType.AckSnapshot, snapshotId }).ok).toBe(
+        false,
+      );
+    }
+  });
+
+  it('rejects non-numeric and missing ids', () => {
+    for (const snapshotId of ['5', null, undefined, NaN, {}, []]) {
+      expect(validateClientMessage({ type: ClientMessageType.AckSnapshot, snapshotId }).ok).toBe(
+        false,
+      );
+    }
+  });
+
+  it('agrees between the two ack paths across the whole range', () => {
+    // The two paths carry the same value and must never disagree about whether
+    // it is legal — that mismatch is exactly what caused the disconnect loop.
+    for (const id of [-2, -1, 0, 1, 1000, 2 ** 31]) {
+      const dedicated = validateClientMessage({
+        type: ClientMessageType.AckSnapshot,
+        snapshotId: id,
+      }).ok;
+      const piggybacked = validateClientMessage({
+        type: ClientMessageType.Input,
+        inputs: [INPUT],
+        lastAckedSnapshot: id,
+      }).ok;
+      expect(dedicated, `ack paths disagree for ${id}`).toBe(piggybacked);
+    }
+  });
+});
+
+describe('malformed input', () => {
+  it('rejects a message that is not an object', () => {
+    for (const raw of [null, undefined, 42, 'hello', []]) {
+      expect(validateClientMessage(raw).ok).toBe(false);
+    }
+  });
+
+  it('rejects an unknown message type', () => {
+    expect(validateClientMessage({ type: 'drop_tables' }).ok).toBe(false);
+  });
+});
+
+describe('developer commands', () => {
+  // The validator only checks shape. Whether a server *honours* a dev command
+  // is its devTools setting's decision, and a production build cannot turn
+  // that on — so a well-formed command from a player is still refused there.
+  it('accepts a well-formed teleport', () => {
+    const r = validateClientMessage({
+      type: ClientMessageType.DevCommand,
+      command: { kind: 'teleport', x: 1, y: 2, z: 3 },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects a teleport outside any map', () => {
+    const r = validateClientMessage({
+      type: ClientMessageType.DevCommand,
+      command: { kind: 'teleport', x: 1e9, y: 0, z: 0 },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.suspicious).toBe(true);
+  });
+
+  it('rejects an unknown command kind and a missing command', () => {
+    expect(validateClientMessage({ type: ClientMessageType.DevCommand, command: { kind: 'ban_everyone' } }).ok).toBe(false);
+    expect(validateClientMessage({ type: ClientMessageType.DevCommand }).ok).toBe(false);
+  });
+
+  it('floors and bounds coin grants', () => {
+    const r = validateClientMessage({
+      type: ClientMessageType.DevCommand,
+      command: { kind: 'give_coins', amount: 12.9 },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.type === ClientMessageType.DevCommand && r.value.command.kind === 'give_coins') {
+      expect(r.value.command.amount).toBe(12);
+    }
+    expect(validateClientMessage({ type: ClientMessageType.DevCommand, command: { kind: 'give_coins', amount: -1 } }).ok).toBe(false);
+  });
+});
