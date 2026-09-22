@@ -22,6 +22,7 @@ import {
   clamp,
   createLogger,
   getAmbience,
+  getEngine,
   getSound,
   type SoundDefinition,
   type SynthRecipe,
@@ -45,6 +46,23 @@ interface AmbienceVoice {
   key: string;
 }
 
+/**
+ * A running engine loop for one vehicle. Lives as long as that vehicle is
+ * being driven; `setEngine` retunes it every frame, `removeEngine` fades it.
+ */
+interface EngineVoice {
+  key: string;
+  fundamental: OscillatorNode;
+  sub: OscillatorNode;
+  hiss: AudioBufferSourceNode;
+  filter: BiquadFilterNode;
+  gain: GainNode;
+  /** Present for spatialised (non-occupant) voices; absent when heard from the seat. */
+  panner: PannerNode | null;
+  distanceFilter: BiquadFilterNode | null;
+  position: Vec3 | null;
+}
+
 export class AudioEngine {
   private context: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -59,6 +77,8 @@ export class AudioEngine {
   private readonly exclusiveVoices = new Map<string, AudioBufferSourceNode | OscillatorNode>();
 
   private readonly ambienceVoices: AmbienceVoice[] = [];
+  /** One engine loop per driven vehicle, keyed by vehicle id. */
+  private readonly engineVoices = new Map<number, EngineVoice>();
   private settings: AudioSettings;
   private started = false;
   /** Live voice count, so a chaotic fight can't exhaust the audio thread. */
@@ -339,6 +359,18 @@ export class AudioEngine {
       legacy.setOrientation(forward.x, forward.y, forward.z, up.x, up.y, up.z);
     }
 
+    // Engine loops are long-lived, so their air absorption is tracked here
+    // rather than through the expiring list below.
+    for (const voice of this.engineVoices.values()) {
+      if (!voice.distanceFilter || !voice.position) continue;
+      const distance = Math.hypot(
+        voice.position.x - position.x,
+        voice.position.y - position.y,
+        voice.position.z - position.z,
+      );
+      voice.distanceFilter.frequency.value = clamp(20000 - distance * 180, 700, 20000);
+    }
+
     // Apply the air-absorption filter for sounds still playing.
     const now = this.context!.currentTime;
     for (let i = this.pendingDistanceFilters.length - 1; i >= 0; i--) {
@@ -378,6 +410,157 @@ export class AudioEngine {
 
   ui(key: string): void {
     this.play(key);
+  }
+
+  // -------------------------------------------------------------- engines
+
+  /**
+   * Keep vehicle `id`'s engine loop running and retuned to `speedRatio`.
+   *
+   * Creates the voice on first call. `position === null` means the listener is
+   * sitting in it: the loop plays 2D at full level, because an engine under
+   * your own seat does not pan as you look around. Any other vehicle is
+   * spatialised at its position with the same air-absorption filter that
+   * gunfire gets, so a distant buggy sounds distant, not merely quiet.
+   */
+  setEngine(id: number, key: string, position: Vec3 | null, speedRatio: number, dt: number): void {
+    if (!this.isRunning) return;
+    const def = getEngine(key);
+    if (!def) return;
+
+    const ctx = this.context!;
+    const now = ctx.currentTime;
+    let voice = this.engineVoices.get(id);
+
+    // A voice built for the seat has no panner; one built for the world does.
+    // Switching seat <-> world means rebuilding, which happens once per
+    // board/dismount and is inaudible under the fade.
+    if (voice && (voice.panner === null) !== (position === null)) {
+      this.removeEngine(id, 0.15);
+      voice = undefined;
+    }
+
+    if (!voice) {
+      if (this.activeVoices >= this.maxVoices) return;
+      const bus = this.buses.get(def.bus);
+      if (!bus) return;
+
+      const fundamental = ctx.createOscillator();
+      fundamental.type = 'sawtooth';
+      fundamental.frequency.value = def.idleHz;
+
+      const sub = ctx.createOscillator();
+      sub.type = 'square';
+      sub.frequency.value = def.idleHz / 2;
+      const subGain = ctx.createGain();
+      subGain.gain.value = def.subLevel;
+
+      const hiss = ctx.createBufferSource();
+      hiss.buffer = this.noiseBuffer;
+      hiss.loop = true;
+      const hissFilter = ctx.createBiquadFilter();
+      hissFilter.type = 'bandpass';
+      hissFilter.frequency.value = 2400;
+      hissFilter.Q.value = 0.8;
+      const hissGain = ctx.createGain();
+      hissGain.gain.value = def.hissLevel;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = def.filterIdleHz;
+      filter.Q.value = def.filterQ;
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(def.idleGain, now + 0.2);
+
+      fundamental.connect(filter);
+      sub.connect(subGain);
+      subGain.connect(filter);
+      hiss.connect(hissFilter);
+      hissFilter.connect(hissGain);
+      hissGain.connect(filter);
+      filter.connect(gain);
+
+      let panner: PannerNode | null = null;
+      let distanceFilter: BiquadFilterNode | null = null;
+      if (position && this.settings.spatial) {
+        panner = ctx.createPanner();
+        panner.panningModel = 'HRTF';
+        panner.distanceModel = 'inverse';
+        panner.refDistance = def.refDistance;
+        panner.maxDistance = def.maxDistance;
+        panner.rolloffFactor = 1.1;
+        distanceFilter = ctx.createBiquadFilter();
+        distanceFilter.type = 'lowpass';
+        distanceFilter.frequency.value = 20000;
+        distanceFilter.Q.value = 0.7;
+        gain.connect(distanceFilter);
+        distanceFilter.connect(panner);
+        panner.connect(bus.gain);
+      } else {
+        gain.connect(bus.gain);
+      }
+
+      fundamental.start(now);
+      sub.start(now);
+      hiss.start(now);
+      this.activeVoices++;
+
+      voice = { key, fundamental, sub, hiss, filter, gain, panner, distanceFilter, position };
+      this.engineVoices.set(id, voice);
+    }
+
+    // Retune toward the current speed. setTargetAtTime gives a first-order
+    // lag, which is exactly how a real engine's revs follow the throttle.
+    const ratio = clamp(speedRatio, 0, 1);
+    const tau = Math.max(0.02, def.responseSec);
+    const hz = def.idleHz + (def.maxHz - def.idleHz) * ratio;
+    voice.fundamental.frequency.setTargetAtTime(hz, now, tau);
+    voice.sub.frequency.setTargetAtTime(hz / 2, now, tau);
+    voice.filter.frequency.setTargetAtTime(
+      def.filterIdleHz + (def.filterMaxHz - def.filterIdleHz) * ratio,
+      now,
+      tau,
+    );
+    voice.gain.gain.setTargetAtTime(def.idleGain + (def.maxGain - def.idleGain) * ratio, now, tau);
+
+    if (voice.panner && position) {
+      // Slide rather than jump, so a 20 Hz snapshot cadence does not zip.
+      voice.panner.positionX.setTargetAtTime(position.x, now, 0.05);
+      voice.panner.positionY.setTargetAtTime(position.y, now, 0.05);
+      voice.panner.positionZ.setTargetAtTime(position.z, now, 0.05);
+      voice.position = position;
+    }
+    void dt;
+  }
+
+  /** Fade out and release vehicle `id`'s engine loop. Safe if none exists. */
+  removeEngine(id: number, fadeSeconds = 0.4): void {
+    const voice = this.engineVoices.get(id);
+    if (!voice || !this.context) return;
+    this.engineVoices.delete(id);
+
+    const now = this.context.currentTime;
+    voice.gain.gain.cancelScheduledValues(now);
+    voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+    voice.gain.gain.linearRampToValueAtTime(0.0001, now + fadeSeconds);
+    const stopAt = now + fadeSeconds + 0.05;
+    try {
+      voice.fundamental.stop(stopAt);
+      voice.sub.stop(stopAt);
+      voice.hiss.stop(stopAt);
+    } catch {
+      // Already stopped.
+    }
+    voice.fundamental.addEventListener('ended', () => {
+      this.activeVoices = Math.max(0, this.activeVoices - 1);
+    });
+  }
+
+  /** Stop every engine loop — match end, map change, disposal. */
+  stopEngines(): void {
+    for (const id of Array.from(this.engineVoices.keys())) this.removeEngine(id, 0.2);
   }
 
   // ------------------------------------------------------------ ambience
@@ -465,16 +648,18 @@ export class AudioEngine {
   }
 
   dispose(): void {
+    this.stopEngines();
     this.stopAmbience();
     void this.context?.close();
     this.context = null;
     this.started = false;
   }
 
-  stats(): { voices: number; ambience: number; running: boolean } {
+  stats(): { voices: number; ambience: number; engines: number; running: boolean } {
     return {
       voices: this.activeVoices,
       ambience: this.ambienceVoices.length,
+      engines: this.engineVoices.size,
       running: this.isRunning,
     };
   }

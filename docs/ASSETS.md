@@ -14,7 +14,7 @@ genuine 10k-triangle rigged character or a recorded gunshot was not possible
 here, so the code generates a stand-in and **says so**:
 
 - `AssetManifest.report()` logs the gap at every boot:
-  `22 of 22 asset groups have no authored file and are being generated
+  `23 of 23 asset groups have no authored file and are being generated
   procedurally at runtime.`
 - The in-game developer panel shows `Assets: procedural` in amber.
 - Every entry in `packages/client/src/core/AssetManifest.ts` carries
@@ -35,7 +35,7 @@ can mean anything from a credible generated asset to a grey box.
 | Characters | Primitive-built rigs with real joints, driven by code-authored locomotion poses | Silhouettes are distinguishable and animation is readable. Clearly not a authored character model. |
 | View models | Primitive weapon shapes with correct muzzle / ejection / magazine sockets | Correct timing, weight and sockets. Geometry is blocky. |
 | VFX | Generated sprite particles, tracers, decals, muzzle flashes | Closest to shippable of anything here. |
-| Audio | Web Audio synthesis (noise bursts, filtered envelopes, FM tones) per recipe | Distinct and informative — you can tell weapons and surfaces apart by ear. Does not sound recorded. |
+| Audio | Web Audio synthesis (noise bursts, filtered envelopes, FM tones) per recipe; a looping oscillator motor for vehicles that revs with speed | Distinct and informative — you can tell weapons, surfaces and an approaching buggy apart by ear. Does not sound recorded. |
 | Music | Sequenced synthesis that ducks under gunfire | Functional and non-repetitive. Not a composed score. |
 
 The gameplay-critical property is preserved: **every sound and every material is
@@ -87,13 +87,14 @@ carried on each manifest entry, so the two cannot drift apart.
 | `animation.viewmodel.weapon` | Per weapon: idle / fire / fire-ads / reload / reload-empty / equip / holster / sprint / inspect / melee. 60fps for fire and reload. |
 | `animation.character.emote` | salute / taunt / victory pose, 2-4s each, loopable hold. |
 
-### Audio (5 groups)
+### Audio (6 groups)
 
 | Key | Requirement |
 | --- | --- |
 | `audio.weapons` | Per weapon: fire (3-5 round-robin variants), fire-distant, reload start / mag-out / mag-in / bolt, dry fire. 48kHz mono WAV, -3dBFS peak. |
 | `audio.impacts` | Per surface material: 4 impact variants + 4 footstep variants, 48kHz mono. |
 | `audio.ambience` | Seamless stereo loops, 30-60s: wind, machinery, rain, city night, neon hum. |
+| `audio.vehicles` | Per vehicle: engine loop at idle / mid / full revs (seamless, 4-8s each, pitch-shiftable), start, stop, collision, destruction. 48kHz mono. |
 | `audio.ui` | click / hover / back / error / purchase / reward / level-up / rank-up. |
 | `audio.music` | Menu / lobby / combat / victory / defeat / event. Stem-separated where possible so intensity can follow the match. 48kHz stereo. |
 

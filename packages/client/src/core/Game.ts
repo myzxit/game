@@ -705,6 +705,7 @@ export class Game {
       if (seen.has(id)) continue;
       this.renderer.remove(entity.rig.root);
       disposeVehicle(entity.rig);
+      this.audio.removeEngine(id);
       this.vehicleEntities.delete(id);
     }
   }
@@ -733,12 +734,23 @@ export class Game {
   }
 
   private updateVehicles(dt: number): void {
-    for (const entity of this.vehicleEntities.values()) {
+    for (const [id, entity] of this.vehicleEntities) {
       const pose = this.vehiclePose(entity);
       const state = entity.next.state;
       entity.rig.root.position.set(pose.position.x, pose.position.y, pose.position.z);
       entity.rig.root.rotation.y = pose.yaw;
       updateVehicleRig(entity.rig, pose.speed, state.health, state.destroyed, dt);
+
+      // Engine: runs while someone is driving, silent otherwise. Heard 2D from
+      // our own seat, spatialised at the vehicle from anywhere else.
+      const driven = state.driverId !== null && !state.destroyed;
+      if (driven) {
+        const seatedHere = this.localVehicleId === id;
+        const ratio = Math.abs(pose.speed) / Math.max(1, entity.rig.def.maxSpeed);
+        this.audio.setEngine(id, entity.rig.def.engineSfxKey, seatedHere ? null : pose.position, ratio, dt);
+      } else {
+        this.audio.removeEngine(id);
+      }
     }
   }
 
@@ -801,6 +813,7 @@ export class Game {
       this.renderer.remove(entity.rig.root);
       disposeVehicle(entity.rig);
     }
+    this.audio.stopEngines();
     this.vehicleEntities.clear();
     this.localVehicleId = null;
   }
@@ -1439,7 +1452,7 @@ export class Game {
       <div class="row"><span>Corrections</span><span>${prediction.corrections}</span></div>
       <div class="row"><span>Replayed</span><span>${prediction.replayed}</span></div>
       <div class="row"><span>Particles</span><span>${vfx.particles}</span></div>
-      <div class="row"><span>Voices</span><span>${audio.voices}</span></div>
+      <div class="row"><span>Voices</span><span>${audio.voices}${audio.engines ? ` (+${audio.engines} engine)` : ''}</span></div>
       <div class="row"><span>Remotes</span><span>${this.remoteEntities.size}</span></div>
       <div class="row"><span>Vehicles</span><span>${this.vehicleEntities.size}${this.localVehicleId !== null ? ' (seated)' : ''}</span></div>
       <div class="row"><span>Delta resyncs</span><span>${this.deltaResyncs}</span></div>

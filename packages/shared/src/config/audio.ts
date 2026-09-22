@@ -381,3 +381,64 @@ export const MUSIC: readonly MusicTrack[] = [
 ];
 
 export const getMusic = (key: string): MusicTrack | undefined => MUSIC.find((m) => m.key === key);
+
+// ---------------------------------------------------------------- engines
+
+/**
+ * A continuous engine loop, driven by the vehicle's speed each frame rather
+ * than triggered once. Two oscillators (a saw fundamental and a square
+ * sub-octave) under a low-pass give a small motor its buzz; a thin noise layer
+ * adds intake hiss. Pitch and gain are mapped from `speedRatio` (|speed| /
+ * maxSpeed, 0..1) so the engine audibly winds up as the vehicle accelerates.
+ *
+ * Only heard while a vehicle is driven — an empty buggy is silent, so its
+ * engine is a real cue that someone is coming, which is what its balance note
+ * promises.
+ */
+export interface EngineDefinition {
+  key: string;
+  bus: AudioBus;
+  /** Fundamental at idle and at full speed, Hz. */
+  idleHz: number;
+  maxHz: number;
+  /** Low-pass cutoff at idle and at full speed, Hz. */
+  filterIdleHz: number;
+  filterMaxHz: number;
+  filterQ: number;
+  /** Loop gain at idle and at full speed, 0..1. */
+  idleGain: number;
+  maxGain: number;
+  /** Relative level of the square sub-octave and the noise hiss. */
+  subLevel: number;
+  hissLevel: number;
+  /** Seconds for pitch/gain to settle toward a new speed. */
+  responseSec: number;
+  /** Spatial rolloff for non-occupants. */
+  maxDistance: number;
+  refDistance: number;
+}
+
+export const ENGINES: readonly EngineDefinition[] = [
+  {
+    key: 'sfx.vehicle.buggy_engine',
+    bus: AudioBus.Sfx,
+    idleHz: 46,
+    maxHz: 150,
+    filterIdleHz: 380,
+    filterMaxHz: 1900,
+    filterQ: 1.3,
+    idleGain: 0.18,
+    maxGain: 0.5,
+    subLevel: 0.6,
+    hissLevel: 0.22,
+    responseSec: 0.25,
+    // Loud on purpose: the buggy's whole balance is that you hear it coming.
+    // 160m is more than twice a footstep's range and just under a rifle's
+    // (180-220m); a test pins the footstep ratio.
+    maxDistance: 160,
+    refDistance: 9,
+  },
+];
+
+export const getEngine = (key: string): EngineDefinition | undefined =>
+  ENGINES.find((e) => e.key === key);

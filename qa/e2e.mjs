@@ -142,6 +142,9 @@ try {
     // Keyboard input is only routed into the sim while the viewport has pointer
     // lock, which is what the player's first click does.
     await a.page.click('#viewport', { position: { x: 640, y: 360 } });
+    // B clicks too: browsers only start audio after a gesture, and B's audio
+    // is what proves a *spectator* hears a driven vehicle later on.
+    await b.page.click('#viewport', { position: { x: 640, y: 360 } });
     await a.page.waitForTimeout(250);
 
     const before = await a.page.evaluate(() => {
@@ -278,13 +281,37 @@ try {
              after.driver && drove > 1 && camMoved > 1,
              `vehicle moved ${drove.toFixed(1)}m, camera ${camMoved.toFixed(1)}m`);
 
+        // The engine loop must exist while driving. Audio needs a user gesture
+        // (the viewport click above) — if the context never started, that is
+        // reported as such rather than as a missing engine.
+        const engine = await a.page.evaluate(() => window.titan.audio.stats());
+        if (!engine.running) {
+          skip('a driven vehicle has a running engine loop', 'audio context not running in headless');
+        } else {
+          step('a driven vehicle has a running engine loop', engine.engines >= 1, JSON.stringify(engine));
+        }
+
+        // The other client hears it too, spatialised: its engine count rises
+        // while A drives, without B being anywhere near a seat.
+        const heard = await b.page.evaluate(() => window.titan.audio.stats());
+        if (!heard.running) {
+          skip('the other client hears the driven vehicle', 'audio context not running in headless');
+        } else {
+          step('the other client hears the driven vehicle', heard.engines >= 1, JSON.stringify(heard));
+        }
+
         await a.page.keyboard.press('KeyF');
-        await a.page.waitForTimeout(700);
+        await a.page.waitForTimeout(900);
         const exited = await a.page.evaluate(() => ({
           seated: window.titan.localVehicleId,
           viewModelVisible: window.titan.viewModel.root?.visible ?? null,
+          engines: window.titan.audio.stats().engines,
         }));
         step('pressing F again dismounts', exited.seated === null, JSON.stringify(exited));
+        if (engine.running) {
+          step('the engine stops once nobody is driving', exited.engines === 0,
+               `engines=${exited.engines}`);
+        }
       }
     }
   }

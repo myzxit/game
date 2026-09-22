@@ -184,6 +184,15 @@ const SPECS: AssetSpec[] = [
     procedural: true,
   },
   {
+    key: 'audio.vehicles',
+    kind: 'sound',
+    url: null,
+    requirement:
+      'Per vehicle: engine loop at idle / mid / full revs (seamless, 4-8s each, ' +
+      'pitch-shiftable), start, stop, collision, destruction. 48kHz mono.',
+    procedural: true,
+  },
+  {
     key: 'audio.music',
     kind: 'music',
     url: null,

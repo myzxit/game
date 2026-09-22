@@ -10,8 +10,8 @@ Last verified, all in one sweep:
 | Check | Result |
 | --- | --- |
 | `npm run typecheck` | clean |
-| `npm test` | 193/193 |
-| `npm run qa:e2e` (dev bundle) | 26/26 steps |
+| `npm test` | 199/199 |
+| `npm run qa:e2e` (dev bundle) | 29/29 steps |
 | `npm run qa:e2e` (release bundle) | 16/16 steps, 4 skipped |
 | `npm run qa:server` | 13/13 checks |
 
@@ -24,7 +24,7 @@ release bundle. They report as *skipped* rather than passing vacuously.
 ```bash
 npm install
 npm run build
-npm test                      # 193 unit tests
+npm test                      # 199 unit tests
 
 npm run dev:server            # terminal 1
 npm run dev:client            # terminal 2
@@ -111,14 +111,14 @@ or design is taken from any existing game.
 | Settings (graphics / audio / controls / gameplay) | Working | Low preset reduces decoration but never gameplay legibility. |
 | Localization | Working | Korean primary, 749 keys, English fallback at full parity (enforced by test). Japanese and Chinese are declared as planned and deliberately absent rather than half-filled. |
 | Accessibility | Working | Camera shake, motion reduction, text scale, subtitles, colourblind palettes, high contrast, flash reduction. |
-| Audio | Working | Procedural synthesis, HRTF panning, distance filtering, voice budget. |
+| Audio | Working | Procedural synthesis, HRTF panning, distance filtering, voice budget, looping engine voices. A dangling sound key is a test failure. |
 | Keyboard + mouse | Working | Verified in a real browser. |
 | Gamepad | **Partial** | Implemented against the Gamepad API but **never tested on real hardware** — there is no controller attached to this machine. Treat as unverified. |
 | Touch / virtual joystick | **Partial** | Implemented but **never tested on a real touch device.** Treat as unverified. |
 
 ## Known gaps
 
-### Vehicles — working, with two honest caveats
+### Vehicles — working, with one honest caveat
 
 Server side: vehicles spawn from map data; boarding, driving on both combat
 maps, seat contention, occupant sync, damage, destruction and the wire format
@@ -139,16 +139,22 @@ localized board/dismount prompt within range, and route W/S/A/D into drive
 input while seated with the camera riding in the seat. The browser E2E boards,
 drives and dismounts a real buggy through the real interact key.
 
-Caveats:
+Engine audio: a looping synthesised motor (saw fundamental, square sub-octave,
+noise intake hiss under a low-pass) whose pitch, brightness and level follow the
+vehicle's speed with a first-order lag. Heard 2D from your own seat; spatialised
+at the vehicle with air-absorption filtering from anywhere else, and audible
+from 160m — more than twice a footstep's range — because the buggy's balance
+depends on being heard coming. It runs only while driven, so an idle buggy is
+silent. The browser E2E confirms the driver's client and the other client both
+hold a running engine voice while driving, and that it stops on dismount.
+
+Caveat:
 
 - **The driver sees the vehicle 100ms in the past.** Vehicles are interpolated
   on the same delayed clock as remote players; there is no client-side vehicle
   prediction. Driving feels slightly laggy compared to on-foot movement, which
   *is* predicted. Adding vehicle prediction is a contained piece of work
   (the server's `driveVehicle` is deterministic) but is not done.
-- **No engine audio.** The buggy's definition names an engine sound; no
-  synthesis recipe exists for it yet, so it is silent. Its balance note promises
-  a loud engine — that promise is currently unmet.
 
 ### Replay — groundwork only
 
@@ -205,6 +211,6 @@ present:
 - Authored 3D models, textures, animations and audio (see ASSETS.md).
 - A real payment integration (see MONETIZATION.md).
 - Replay playback.
-- Client-side vehicle prediction and engine audio (vehicles themselves work).
+- Client-side vehicle prediction (vehicles themselves work, with engine audio).
 - Japanese and Chinese localization (declared as planned; the string tables do
   not exist).

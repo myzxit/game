@@ -109,10 +109,10 @@ matched by node id — a client cannot select an option it was not offered.
 
 ## Vehicles
 
-1 vehicle (scout buggy): two seats, fast, fragile, unarmed. Boarding, driving
-and dismounting work end to end; the driver sees it interpolated 100ms behind
-and it has no engine sound yet. See
-[STATUS.md](STATUS.md#vehicles--working-with-two-honest-caveats).
+1 vehicle (scout buggy): two seats, fast, fragile, unarmed, and loud — its
+engine carries 160m so it announces itself. Boarding, driving and dismounting
+work end to end; the driver sees it interpolated 100ms behind. See
+[STATUS.md](STATUS.md#vehicles--working-with-one-honest-caveat).
 
 ## Progression
 
